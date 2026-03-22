@@ -41,6 +41,16 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
             output: output.clone(),
             action: action.clone(),
         },
+        Msg::CreateVirtualOutput {
+            width,
+            height,
+            refresh_rate,
+        } => Request::CreateVirtualOutput {
+            width: Some(*width),
+            height: Some(*height),
+            refresh_rate: Some(*refresh_rate),
+        },
+        Msg::RemoveVirtualOutput { name } => Request::RemoveVirtualOutput { name: name.clone() },
         Msg::Workspaces => Request::Workspaces,
         Msg::Windows => Request::Windows,
         Msg::Layers => Request::Layers,
@@ -565,6 +575,31 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
                 print_cast(&cast);
                 println!();
             }
+        }
+        Msg::CreateVirtualOutput { .. } => {
+            let Response::VirtualOutputCreated(name) = response else {
+                bail!("unexpected response: expected VirtualOutputCreated, got {response:?}");
+            };
+
+            if json {
+                let response = json!({ "name": name });
+                println!("{response}");
+                return Ok(());
+            }
+
+            println!("Created virtual output: {name}");
+        }
+        Msg::RemoveVirtualOutput { name } => {
+            let Response::Handled = response else {
+                bail!("unexpected response: expected Handled, got {response:?}");
+            };
+
+            if json {
+                println!("{{}}");
+                return Ok(());
+            }
+
+            println!("Removed virtual output: {name}");
         }
         Msg::RawRequest => {
             let output = serde_json::to_string(&response).context("error formatting response")?;
