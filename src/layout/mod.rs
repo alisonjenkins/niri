@@ -829,6 +829,19 @@ impl<W: LayoutElement> Layout<W> {
                     {
                         source.clean_up_workspaces();
                     }
+
+                    // Every workspace on a source monitor can belong to the output
+                    // that is connecting — a virtual output that held the session
+                    // while a physical one was away, with its workspaces pinned back
+                    // to that display by open-on-output. Draining them all leaves the
+                    // source with none, which breaks the invariant asserted in
+                    // Monitor::verify_invariants and panics the next time anything
+                    // indexes workspaces[active_workspace_idx]; in practice, the
+                    // screencast render path, taking the session down.
+                    if source.workspaces.is_empty() {
+                        source.add_workspace_bottom();
+                        source.active_workspace_idx = 0;
+                    }
                 }
                 workspaces.reverse();
 
