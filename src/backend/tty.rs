@@ -108,8 +108,88 @@ pub struct Tty {
 struct VirtualOutputs {
     /// Counter for auto-naming outputs (HEADLESS-1, HEADLESS-2, etc.)
     counter: u32,
-    /// Track outputs by name for removal, storing (Output, OutputId)
-    outputs: HashMap<String, (Output, OutputId)>,
+    /// Track outputs by name for removal and for reapplying output config.
+    outputs: HashMap<String, VirtualOutput>,
+}
+
+/// A virtual output and the state needed to take it in and out of the layout.
+///
+/// A virtual output has no connector, so none of the DRM machinery knows about
+/// it: it is neither rescanned nor rebuilt, and everything about it has to be
+/// remembered here.
+struct VirtualOutput {
+    output: Output,
+    id: OutputId,
+    /// Kept so the IPC entry can be rebuilt, since `refresh_ipc_outputs()`
+    /// discards the map and repopulates it from the DRM devices.
+    refresh_rate: u32,
+    /// Whether the output is currently part of the layout. Turning a virtual
+    /// output off removes it from the layout but keeps it here, so that
+    /// turning it back on can restore it.
+    enabled: bool,
+}
+
+/// Whether a virtual output needs taking in or out of the layout.
+///
+/// `Some(enabled)` is the state to move to; `None` means it already matches.
+fn virtual_output_transition(enabled: bool, off: bool) -> Option<bool> {
+    (enabled == off).then_some(!off)
+}
+
+/// Add the virtual outputs to a freshly scanned IPC output map.
+///
+/// `refresh_ipc_outputs()` rebuilds the map from the DRM devices, and a
+/// virtual output has no connector to be found there. Merging them back in is
+/// what keeps a virtual output listed across an output config change instead
+/// of being silently destroyed by one.
+fn with_virtual_outputs<'a>(
+    ipc_outputs: &mut IpcOutputMap,
+    virtual_outputs: impl Iterator<Item = &'a VirtualOutput>,
+) {
+    for virt in virtual_outputs {
+        ipc_outputs.insert(
+            virt.id,
+            virtual_ipc_output(&virt.output, virt.refresh_rate, virt.enabled),
+        );
+    }
+}
+
+/// Refresh interval matching the rate a virtual output advertises.
+fn virtual_refresh_interval(refresh_rate: u32) -> Duration {
+    Duration::from_nanos(1_000_000_000 / u64::from(refresh_rate))
+}
+
+/// The IPC view of a virtual output.
+///
+/// Rebuilt rather than stored because the logical size follows the layout, so
+/// a cached copy would go stale as soon as the output moved or was scaled.
+fn virtual_ipc_output(output: &Output, refresh_rate: u32, enabled: bool) -> niri_ipc::Output {
+    let physical_properties = output.physical_properties();
+    let mode = output.current_mode();
+    niri_ipc::Output {
+        name: output.name(),
+        make: physical_properties.make,
+        model: physical_properties.model,
+        serial: None,
+        physical_size: None,
+        modes: mode
+            .map(|mode| niri_ipc::Mode {
+                width: mode.size.w as u16,
+                height: mode.size.h as u16,
+                refresh_rate: refresh_rate * 1000,
+                is_preferred: true,
+            })
+            .into_iter()
+            .collect(),
+        current_mode: mode.map(|_| 0),
+        is_custom_mode: true,
+        vrr_supported: false,
+        vrr_enabled: false,
+        // A disabled output is still listed, but it has no place in the
+        // layout, so it has no logical position or size to report.
+        logical: enabled.then(|| logical_output(output)),
+        max_bpc: None,
+    }
 }
 
 pub type TtyRenderer<'render> = MultiRenderer<
@@ -2269,6 +2349,12 @@ impl Tty {
             }
         }
 
+        // Virtual outputs have no connector and so appear nowhere in the loop
+        // above. Without this they are dropped from the map on every refresh,
+        // which made turning one on or off — anything that reapplies output
+        // config — silently destroy it.
+        with_virtual_outputs(&mut ipc_outputs, self.virtual_outputs.outputs.values());
+
         let mut guard = self.ipc_outputs.lock().unwrap();
         *guard = ipc_outputs;
         niri.ipc_outputs_changed = true;
@@ -2354,55 +2440,81 @@ impl Tty {
         });
 
         let output_id = OutputId::next();
-        let physical_properties = output.physical_properties();
-        self.ipc_outputs.lock().unwrap().insert(
-            output_id,
-            niri_ipc::Output {
-                name: output.name(),
-                make: physical_properties.make,
-                model: physical_properties.model,
-                serial: None,
-                physical_size: None,
-                modes: vec![niri_ipc::Mode {
-                    width,
-                    height,
-                    refresh_rate: refresh_rate * 1000,
-                    is_preferred: true,
-                }],
-                current_mode: Some(0),
-                is_custom_mode: true,
-                vrr_supported: false,
-                vrr_enabled: false,
-                logical: Some(logical_output(&output)),
-                max_bpc: None,
+        self.ipc_outputs
+            .lock()
+            .unwrap()
+            .insert(output_id, virtual_ipc_output(&output, refresh_rate, true));
+
+        self.virtual_outputs.outputs.insert(
+            connector.clone(),
+            VirtualOutput {
+                output: output.clone(),
+                id: output_id,
+                refresh_rate,
+                enabled: true,
             },
         );
 
-        // Track the output for potential removal
-        self.virtual_outputs
-            .outputs
-            .insert(connector.clone(), (output.clone(), output_id));
-
-        let refresh_interval = Duration::from_nanos(1_000_000_000 / u64::from(refresh_rate));
-        niri.add_output(output, Some(refresh_interval), false);
+        niri.add_output(output, Some(virtual_refresh_interval(refresh_rate)), false);
 
         connector
+    }
+
+    /// Take virtual outputs in and out of the layout to match `off` in config.
+    ///
+    /// The loop over DRM surfaces cannot do this: a virtual output has no
+    /// connector and no surface, so it is invisible there and `off` had no
+    /// effect on one at all. It stays tracked and listed either way, so
+    /// turning it back on restores it rather than needing it recreated.
+    fn apply_virtual_output_config(&mut self, niri: &mut Niri) {
+        // Decide first, mutate second: the decision reads the config while the
+        // action needs the map mutably.
+        let changes: Vec<(String, bool)> = {
+            let config = self.config.borrow();
+            self.virtual_outputs
+                .outputs
+                .iter()
+                .filter_map(|(name, virt)| {
+                    let off = config
+                        .outputs
+                        .find(virt.output.user_data().get::<OutputName>()?)
+                        .is_some_and(|c| c.off);
+                    virtual_output_transition(virt.enabled, off).map(|on| (name.clone(), on))
+                })
+                .collect()
+        };
+
+        for (name, enable) in changes {
+            let Some(virt) = self.virtual_outputs.outputs.get_mut(&name) else {
+                continue;
+            };
+            virt.enabled = enable;
+            let output = virt.output.clone();
+            let refresh_rate = virt.refresh_rate;
+            if enable {
+                niri.add_output(output, Some(virtual_refresh_interval(refresh_rate)), false);
+            } else {
+                niri.remove_output(&output);
+            }
+        }
     }
 
     /// Remove a virtual headless output by name.
     /// Returns Ok(()) if successful, Err with message if not found.
     pub fn remove_virtual_output(&mut self, niri: &mut Niri, name: &str) -> Result<(), String> {
-        let (output, output_id) = self
+        let virt = self
             .virtual_outputs
             .outputs
             .remove(name)
             .ok_or_else(|| format!("virtual output '{}' not found", name))?;
 
         // Remove from IPC outputs
-        self.ipc_outputs.lock().unwrap().remove(&output_id);
+        self.ipc_outputs.lock().unwrap().remove(&virt.id);
 
-        // Remove from niri
-        niri.remove_output(&output);
+        // Only in the layout while enabled; removing it again would panic.
+        if virt.enabled {
+            niri.remove_output(&virt.output);
+        }
 
         Ok(())
     }
@@ -2554,6 +2666,8 @@ impl Tty {
             return;
         }
         self.update_output_config_on_resume = false;
+
+        self.apply_virtual_output_config(niri);
 
         // Figure out if we should disable laptop panels.
         let disable_laptop_panels = self.should_disable_laptop_panels(niri.is_lid_closed);
@@ -3693,8 +3807,90 @@ mod tests {
     use insta::assert_debug_snapshot;
     use niri_config::output::Modeline;
     use niri_ipc::{HSyncPolarity, VSyncPolarity};
+    use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 
-    use crate::backend::tty::{calculate_drm_mode_from_modeline, calculate_mode_cvt};
+    use crate::backend::tty::{
+        calculate_drm_mode_from_modeline, calculate_mode_cvt, virtual_output_transition,
+        with_virtual_outputs, IpcOutputMap, OutputId, VirtualOutput,
+    };
+
+    fn virtual_output(enabled: bool) -> VirtualOutput {
+        let output = Output::new(
+            "steam".to_owned(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "niri".to_owned(),
+                model: "virtual".to_owned(),
+                serial_number: "1".to_owned(),
+            },
+        );
+        let mode = Mode {
+            size: (1280, 800).into(),
+            refresh: 60_000,
+        };
+        output.change_current_state(Some(mode), None, None, None);
+        output.set_preferred(mode);
+
+        VirtualOutput {
+            output,
+            id: OutputId::next(),
+            refresh_rate: 60,
+            enabled,
+        }
+    }
+
+    #[test]
+    fn turning_a_virtual_output_off_keeps_it_listed() {
+        // Regression: the IPC output map is rebuilt from the DRM devices on
+        // every output config change, and a virtual output has no connector to
+        // be found among them. Before it was merged back in, `niri msg output
+        // <name> off` — or `on`, or any other config change — dropped it from
+        // `niri msg outputs` for good, while it kept its name so it could not
+        // be recreated either.
+        let virt = virtual_output(false);
+        let id = virt.id;
+
+        let mut ipc_outputs = IpcOutputMap::new();
+        with_virtual_outputs(&mut ipc_outputs, std::iter::once(&virt));
+
+        let listed = ipc_outputs
+            .get(&id)
+            .expect("a disabled output is still listed");
+        assert_eq!(listed.name, "steam");
+        assert_eq!(listed.modes.len(), 1);
+        assert_eq!(listed.modes[0].width, 1280);
+        assert_eq!(listed.modes[0].height, 800);
+        // Not in the layout, so it has no position or size there.
+        assert!(listed.logical.is_none());
+    }
+
+    #[test]
+    fn turning_a_virtual_output_back_on_restores_it() {
+        let virt = virtual_output(true);
+        let id = virt.id;
+
+        let mut ipc_outputs = IpcOutputMap::new();
+        with_virtual_outputs(&mut ipc_outputs, std::iter::once(&virt));
+
+        let listed = ipc_outputs.get(&id).expect("an enabled output is listed");
+        assert_eq!(listed.current_mode, Some(0));
+        // Back in the layout, so it reports a place in it again — which is
+        // what makes it usable as a screencast target.
+        assert!(listed.logical.is_some());
+    }
+
+    #[test]
+    fn a_virtual_output_moves_in_and_out_of_the_layout_with_off() {
+        // `off` used to do nothing to a virtual output: the config loop only
+        // walks DRM surfaces, and a virtual output has none.
+        assert_eq!(virtual_output_transition(true, true), Some(false));
+        assert_eq!(virtual_output_transition(false, false), Some(true));
+        // Already in the requested state: nothing to do, and re-adding an
+        // output that is already in the layout would panic.
+        assert_eq!(virtual_output_transition(true, false), None);
+        assert_eq!(virtual_output_transition(false, true), None);
+    }
 
     #[test]
     fn test_calculate_drmmode_from_modeline() {
