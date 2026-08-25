@@ -1745,7 +1745,11 @@ impl Tty {
             .global_space
             .outputs()
             .find(|output| {
-                let tty_state: &TtyOutputState = output.user_data().get().unwrap();
+                // No TtyOutputState means a virtual output, which no DRM
+                // node or crtc can match.
+                let Some(tty_state) = output.user_data().get::<TtyOutputState>() else {
+                    return false;
+                };
                 tty_state.node == node && tty_state.crtc == crtc
             })
             .cloned();
@@ -1825,7 +1829,11 @@ impl Tty {
             .global_space
             .outputs()
             .find(|output| {
-                let tty_state: &TtyOutputState = output.user_data().get().unwrap();
+                // No TtyOutputState means a virtual output, which no DRM
+                // node or crtc can match.
+                let Some(tty_state) = output.user_data().get::<TtyOutputState>() else {
+                    return false;
+                };
                 tty_state.node == node && tty_state.crtc == crtc
             })
             .cloned()
@@ -2237,7 +2245,13 @@ impl Tty {
     }
 
     pub fn get_gamma_size(&self, output: &Output) -> anyhow::Result<u32> {
-        let tty_state = output.user_data().get::<TtyOutputState>().unwrap();
+        // A virtual output has no crtc and so no gamma ramp. Reached whenever a
+        // gamma-control client enumerates outputs, which must not be able to
+        // bring the compositor down by asking about one.
+        let tty_state = output
+            .user_data()
+            .get::<TtyOutputState>()
+            .context("no gamma on a virtual output")?;
         let crtc = tty_state.crtc;
 
         let device = self
@@ -2255,7 +2269,10 @@ impl Tty {
     }
 
     pub fn set_gamma(&mut self, output: &Output, ramp: Option<Vec<u16>>) -> anyhow::Result<()> {
-        let tty_state = output.user_data().get::<TtyOutputState>().unwrap();
+        let tty_state = output
+            .user_data()
+            .get::<TtyOutputState>()
+            .context("no gamma on a virtual output")?;
         let crtc = tty_state.crtc;
 
         let device = self
@@ -2354,7 +2371,11 @@ impl Tty {
                     .global_space
                     .outputs()
                     .find(|output| {
-                        let tty_state: &TtyOutputState = output.user_data().get().unwrap();
+                        // No TtyOutputState means a virtual output, which no
+                        // DRM node or crtc can match.
+                        let Some(tty_state) = output.user_data().get::<TtyOutputState>() else {
+                            return false;
+                        };
                         tty_state.node == *node && tty_state.crtc == crtc
                     })
                     .map(logical_output);
@@ -2752,7 +2773,10 @@ impl Tty {
         }
         for (&node, device) in self.devices.iter_mut() {
             for (&crtc, surface) in device.surfaces.iter_mut() {
-                let tty_state: &TtyOutputState = output.user_data().get().unwrap();
+                let Some(tty_state) = output.user_data().get::<TtyOutputState>() else {
+                    // A virtual output matches no crtc; nothing to do for it.
+                    continue;
+                };
                 if tty_state.node == node && tty_state.crtc == crtc {
                     let word = if enable_vrr { "enabling" } else { "disabling" };
                     if let Err(err) = surface.compositor.use_vrr(enable_vrr) {
@@ -2934,7 +2958,11 @@ impl Tty {
                     .global_space
                     .outputs()
                     .find(|output| {
-                        let tty_state: &TtyOutputState = output.user_data().get().unwrap();
+                        // No TtyOutputState means a virtual output, which no
+                        // DRM node or crtc can match.
+                        let Some(tty_state) = output.user_data().get::<TtyOutputState>() else {
+                            return false;
+                        };
                         tty_state.node == node && tty_state.crtc == crtc
                     })
                     .cloned();
