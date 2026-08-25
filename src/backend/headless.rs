@@ -15,12 +15,12 @@ use anyhow::Context as _;
 use niri_config::OutputName;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::drm::DrmNode;
-use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::backend::egl::native::EGLSurfacelessDisplay;
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::renderer::element::RenderElementStates;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::utils::Size;
 use smithay::wayland::presentation::Refresh;
@@ -296,7 +296,8 @@ impl Headless {
                 if output_state.unfinished_animations_remain {
                     data.niri.queue_redraw(&output_clone);
                 } else {
-                    data.niri.send_frame_callbacks_for_virtual_output(&output_clone);
+                    data.niri
+                        .send_frame_callbacks_for_virtual_output(&output_clone);
                 }
                 TimeoutAction::Drop
             })
