@@ -648,6 +648,49 @@ mod tests {
     }
 
     #[test]
+    fn parse_virtual_output() {
+        // Declaring the output here rather than creating it over IPC is what
+        // lets it survive a compositor restart, and `off` is what keeps it out
+        // of the layout until something wants to stream to it.
+        let parsed = do_parse(
+            r##"
+            output "steam" {
+                virtual-output
+                mode "1280x800@90"
+                off
+            }
+
+            output "DP-2" {
+                mode "5120x1440@120"
+            }
+            "##,
+        );
+
+        let steam = parsed
+            .outputs
+            .0
+            .iter()
+            .find(|o| o.name == "steam")
+            .expect("the declared output should parse");
+        assert!(steam.virtual_output);
+        assert!(steam.off);
+        let mode = steam.mode.expect("a virtual output is sized by its mode");
+        assert_eq!(mode.mode.width, 1280);
+        assert_eq!(mode.mode.height, 800);
+        assert_eq!(mode.mode.refresh, Some(90.));
+
+        // A physical output is unaffected: the marker is opt-in, so leaving it
+        // out must not turn a real monitor into a virtual one.
+        let physical = parsed
+            .outputs
+            .0
+            .iter()
+            .find(|o| o.name == "DP-2")
+            .expect("the physical output should parse");
+        assert!(!physical.virtual_output);
+    }
+
+    #[test]
     fn parse_on_xdg_activate() {
         let parsed = do_parse(
             r#"
@@ -1204,6 +1247,7 @@ mod tests {
                                 },
                             },
                         ),
+                        virtual_output: false,
                         modeline: None,
                         variable_refresh_rate: Some(
                             Vrr {
@@ -1250,6 +1294,7 @@ mod tests {
                                 },
                             },
                         ),
+                        virtual_output: false,
                         modeline: None,
                         variable_refresh_rate: None,
                         focus_at_startup: false,
@@ -1266,6 +1311,7 @@ mod tests {
                         position: None,
                         max_bpc: None,
                         mode: None,
+                        virtual_output: false,
                         modeline: Some(
                             Modeline {
                                 clock: 173.0,

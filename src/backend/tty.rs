@@ -16,7 +16,7 @@ use drm_ffi::drm_mode_modeinfo;
 use libc::dev_t;
 use niri_config::output::{MaxBpc, Modeline};
 use niri_config::{Config, OutputName};
-use niri_ipc::{HSyncPolarity, VSyncPolarity};
+use niri_ipc::{ConfiguredMode, HSyncPolarity, VSyncPolarity};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
@@ -127,6 +127,29 @@ struct VirtualOutput {
     /// output off removes it from the layout but keeps it here, so that
     /// turning it back on can restore it.
     enabled: bool,
+    /// Created from an `output` section with `virtual-output`, rather than
+    /// asked for over IPC. Only a declared output is removed when it stops
+    /// being declared; one created over IPC is owned by whoever asked for it.
+    declared: bool,
+}
+
+/// Size and rate a declared virtual output should have.
+///
+/// A virtual output has no connector to advertise modes, so `mode` is the only
+/// source for its size and there is nothing to fall back to but a default.
+fn declared_virtual_mode(config: &niri_config::Output) -> ConfiguredMode {
+    config.mode.map(|m| m.mode).unwrap_or(ConfiguredMode {
+        width: 1920,
+        height: 1080,
+        refresh: None,
+    })
+}
+
+/// Refresh rate in whole Hz, which is the resolution virtual outputs work in.
+fn configured_refresh_rate(mode: &ConfiguredMode) -> u32 {
+    mode.refresh
+        .map(|r| r.round().clamp(1., 1000.) as u32)
+        .unwrap_or(60)
 }
 
 /// Whether a virtual output needs taking in or out of the layout.
@@ -644,6 +667,10 @@ impl Tty {
                 warn!("error adding device: {err:?}");
             }
         }
+
+        // After the physical outputs, so a declared virtual output does not
+        // become the first monitor and collect the startup windows.
+        self.apply_virtual_output_config(niri);
     }
 
     fn on_udev_event(&mut self, niri: &mut Niri, event: UdevEvent) {
@@ -2404,6 +2431,7 @@ impl Tty {
         height: u16,
         refresh_rate: u32,
         name: Option<String>,
+        declared: bool,
     ) -> Result<String, String> {
         let n = self.virtual_outputs.counter + 1;
 
@@ -2466,6 +2494,7 @@ impl Tty {
                 id: output_id,
                 refresh_rate,
                 enabled: true,
+                declared,
             },
         );
 
@@ -2474,13 +2503,21 @@ impl Tty {
         Ok(connector)
     }
 
-    /// Take virtual outputs in and out of the layout to match `off` in config.
+    /// Bring virtual outputs in line with the config.
     ///
-    /// The loop over DRM surfaces cannot do this: a virtual output has no
-    /// connector and no surface, so it is invisible there and `off` had no
-    /// effect on one at all. It stays tracked and listed either way, so
-    /// turning it back on restores it rather than needing it recreated.
+    /// The loop over DRM surfaces cannot do any of this: a virtual output has
+    /// no connector and no surface, so it is invisible there — `off` had no
+    /// effect on one, and a mode never reached one either.
+    ///
+    /// Outputs declared with `virtual-output` are created here rather than
+    /// waiting for a connector that will never arrive, and are resized when
+    /// their `mode` changes, so a client with a different panel can be served
+    /// by reconfiguring the output instead of replacing it.
     fn apply_virtual_output_config(&mut self, niri: &mut Niri) {
+        self.create_declared_virtual_outputs(niri);
+        self.remove_undeclared_virtual_outputs(niri);
+        self.resize_virtual_outputs(niri);
+
         // Decide first, mutate second: the decision reads the config while the
         // action needs the map mutably.
         let changes: Vec<(String, bool)> = {
@@ -2509,6 +2546,122 @@ impl Tty {
                 niri.add_output(output, Some(virtual_refresh_interval(refresh_rate)), false);
             } else {
                 niri.remove_output(&output);
+            }
+        }
+    }
+
+    /// Create virtual outputs that the config declares but that do not exist.
+    fn create_declared_virtual_outputs(&mut self, niri: &mut Niri) {
+        let declared: Vec<(String, ConfiguredMode)> = {
+            let config = self.config.borrow();
+            config
+                .outputs
+                .0
+                .iter()
+                .filter(|c| c.virtual_output)
+                .filter(|c| !self.virtual_outputs.outputs.contains_key(&c.name))
+                .map(|c| (c.name.clone(), declared_virtual_mode(c)))
+                .collect()
+        };
+
+        for (name, mode) in declared {
+            let refresh_rate = configured_refresh_rate(&mode);
+            if let Err(err) = self.create_virtual_output(
+                niri,
+                mode.width,
+                mode.height,
+                refresh_rate,
+                Some(name.clone()),
+                true,
+            ) {
+                warn!("error creating declared virtual output {name:?}: {err}");
+            }
+        }
+    }
+
+    /// Remove virtual outputs that were declared in config and no longer are.
+    ///
+    /// Only declared ones: an output created over IPC belongs to whoever asked
+    /// for it, and a config reload is no reason to take it away.
+    fn remove_undeclared_virtual_outputs(&mut self, niri: &mut Niri) {
+        let stale: Vec<String> = {
+            let config = self.config.borrow();
+            self.virtual_outputs
+                .outputs
+                .iter()
+                .filter(|(name, virt)| {
+                    virt.declared
+                        && !config
+                            .outputs
+                            .0
+                            .iter()
+                            .any(|c| c.virtual_output && &&c.name == name)
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+
+        for name in stale {
+            if let Err(err) = self.remove_virtual_output(niri, &name) {
+                warn!("error removing virtual output {name:?}: {err}");
+            }
+        }
+    }
+
+    /// Resize declared virtual outputs whose `mode` no longer matches.
+    ///
+    /// This is what lets one declared output serve clients with different
+    /// panels — a handheld at 1280x800 and a television at 3840x2160 — without
+    /// removing and recreating it, which would drop the screencast source a
+    /// client had already been given.
+    fn resize_virtual_outputs(&mut self, niri: &mut Niri) {
+        let resizes: Vec<(String, ConfiguredMode)> = {
+            let config = self.config.borrow();
+            self.virtual_outputs
+                .outputs
+                .iter()
+                .filter(|(_, virt)| virt.declared)
+                .filter_map(|(name, virt)| {
+                    let wanted = declared_virtual_mode(
+                        config
+                            .outputs
+                            .0
+                            .iter()
+                            .find(|c| c.virtual_output && &c.name == name)?,
+                    );
+                    let current = virt.output.current_mode()?;
+                    let same = current.size.w == i32::from(wanted.width)
+                        && current.size.h == i32::from(wanted.height)
+                        && virt.refresh_rate == configured_refresh_rate(&wanted);
+                    (!same).then(|| (name.clone(), wanted))
+                })
+                .collect()
+        };
+
+        for (name, wanted) in resizes {
+            let Some(virt) = self.virtual_outputs.outputs.get_mut(&name) else {
+                continue;
+            };
+            let refresh_rate = configured_refresh_rate(&wanted);
+            virt.refresh_rate = refresh_rate;
+
+            let mode = Mode {
+                size: (i32::from(wanted.width), i32::from(wanted.height)).into(),
+                refresh: i32::try_from(refresh_rate * 1000).unwrap_or(60_000),
+            };
+            virt.output
+                .change_current_state(Some(mode), None, None, None);
+            virt.output.set_preferred(mode);
+
+            // Only outputs in the layout have frame clocks and windows to lay
+            // out again; a disabled one picks the mode up when it is enabled.
+            if virt.enabled {
+                let output = virt.output.clone();
+                if let Some(output_state) = niri.output_state.get_mut(&output) {
+                    output_state.frame_clock =
+                        FrameClock::new(Some(virtual_refresh_interval(refresh_rate)), false);
+                }
+                niri.output_resized(&output);
             }
         }
     }
@@ -3824,8 +3977,9 @@ mod tests {
     use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 
     use crate::backend::tty::{
-        calculate_drm_mode_from_modeline, calculate_mode_cvt, virtual_output_transition,
-        with_virtual_outputs, IpcOutputMap, OutputId, VirtualOutput,
+        calculate_drm_mode_from_modeline, calculate_mode_cvt, configured_refresh_rate,
+        declared_virtual_mode, virtual_output_transition, with_virtual_outputs, ConfiguredMode,
+        IpcOutputMap, OutputId, VirtualOutput,
     };
 
     fn virtual_output(enabled: bool) -> VirtualOutput {
@@ -3851,6 +4005,7 @@ mod tests {
             id: OutputId::next(),
             refresh_rate: 60,
             enabled,
+            declared: true,
         }
     }
 
@@ -3892,6 +4047,64 @@ mod tests {
         // Back in the layout, so it reports a place in it again — which is
         // what makes it usable as a screencast target.
         assert!(listed.logical.is_some());
+    }
+
+    #[test]
+    fn a_declared_virtual_output_takes_its_size_from_mode() {
+        // A virtual output has no connector advertising modes, so `mode` is
+        // the only thing that can say how big it is.
+        let mut config = niri_config::Output {
+            name: "steam".to_owned(),
+            virtual_output: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            declared_virtual_mode(&config),
+            ConfiguredMode {
+                width: 1920,
+                height: 1080,
+                refresh: None
+            },
+        );
+
+        config.mode = Some(niri_config::output::Mode {
+            custom: false,
+            mode: ConfiguredMode {
+                width: 1280,
+                height: 800,
+                refresh: Some(90.),
+            },
+        });
+        let mode = declared_virtual_mode(&config);
+        assert_eq!(mode.width, 1280);
+        assert_eq!(mode.height, 800);
+        assert_eq!(configured_refresh_rate(&mode), 90);
+    }
+
+    #[test]
+    fn an_unstated_refresh_rate_falls_back_to_sixty() {
+        let mode = ConfiguredMode {
+            width: 1280,
+            height: 800,
+            refresh: None,
+        };
+        assert_eq!(configured_refresh_rate(&mode), 60);
+        // Rounded, since a virtual output's rate is in whole Hz.
+        assert_eq!(
+            configured_refresh_rate(&ConfiguredMode {
+                refresh: Some(59.94),
+                ..mode
+            }),
+            60,
+        );
+        // A rate of zero would divide by zero working out a frame interval.
+        assert_eq!(
+            configured_refresh_rate(&ConfiguredMode {
+                refresh: Some(0.),
+                ..mode
+            }),
+            1,
+        );
     }
 
     #[test]

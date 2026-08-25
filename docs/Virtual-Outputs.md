@@ -165,7 +165,32 @@ Arguments:
   <NAME>  Name of the output to remove (e.g., "HEADLESS-1")
 ```
 
+## Declaring a virtual output in the config
+
+An `output` section with `virtual-output` is created at startup instead of waiting for a connector that will never arrive:
+
+```kdl
+output "steam" {
+    virtual-output
+    mode "1280x800@90"
+    off
+}
+```
+
+The size and refresh rate come from `mode`, defaulting to `1920x1080@60` when it is absent, since a virtual output has no connector advertising modes of its own.
+
+A declared output survives a compositor restart and can be left `off` until something wants it. Turning it off takes it out of the layout but keeps it listed, so nothing has to recreate it — and its `mode` can be changed while it exists:
+
+```bash
+# Serve a handheld, then a television, without replacing the output.
+niri msg output steam mode 1280x800@90
+niri msg output steam on
+niri msg output steam mode 3840x2160@60
+```
+
+Removing the `virtual-output` section removes the output on the next config reload. Outputs created over IPC are left alone by config reloads, since they belong to whoever asked for them.
+
 ## Limitations
 
 - Virtual outputs are not supported when running niri nested in another Wayland compositor (Winit backend)
-- Virtual outputs are not persisted across niri restarts - you need to recreate them
+- Virtual outputs created over IPC are not persisted across niri restarts — declare them in the config if you need them to come back
