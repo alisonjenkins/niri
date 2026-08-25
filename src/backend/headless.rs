@@ -26,7 +26,7 @@ use smithay::utils::Size;
 use smithay::wayland::presentation::Refresh;
 
 use super::{IpcOutputMap, OutputId, RenderResult};
-use crate::backend::virtual_output::{VirtualOutputError, VirtualOutputResult};
+use crate::backend::virtual_output::{physical_size_mm, VirtualOutputError, VirtualOutputResult};
 use crate::niri::{Niri, RedrawState};
 use crate::render_helpers::{resources, shaders};
 use crate::utils::{get_monotonic_time, logical_output};
@@ -168,7 +168,9 @@ impl Headless {
         let output = Output::new(
             connector.clone(),
             PhysicalProperties {
-                size: (0, 0).into(),
+                // See `physical_size_mm`: a real `0mm` is honest but gets the
+                // output silently discarded by clients like Steam.
+                size: physical_size_mm(i32::from(width), i32::from(height)),
                 subpixel: Subpixel::Unknown,
                 make: make.clone(),
                 model: model.clone(),
