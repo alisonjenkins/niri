@@ -62,6 +62,7 @@ use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 
 use super::{IpcOutputMap, OutputId, RenderResult};
+use crate::backend::virtual_output::{VirtualOutputError, VirtualOutputResult};
 use crate::frame_clock::FrameClock;
 use crate::niri::{Niri, RedrawState, State};
 use crate::render_helpers::debug::draw_damage;
@@ -2432,13 +2433,13 @@ impl Tty {
         refresh_rate: u32,
         name: Option<String>,
         declared: bool,
-    ) -> Result<String, String> {
+    ) -> VirtualOutputResult<String> {
         let n = self.virtual_outputs.counter + 1;
 
         let connector = match name {
             Some(name) => {
                 if self.virtual_outputs.outputs.contains_key(&name) {
-                    return Err(format!("output \"{name}\" already exists"));
+                    return Err(VirtualOutputError::NameTaken(name));
                 }
                 name
             }
@@ -2668,15 +2669,22 @@ impl Tty {
 
     /// Remove a virtual headless output by name.
     /// Returns Ok(()) if successful, Err with message if not found.
-    pub fn remove_virtual_output(&mut self, niri: &mut Niri, name: &str) -> Result<(), String> {
+    pub fn remove_virtual_output(
+        &mut self,
+        niri: &mut Niri,
+        name: &str,
+    ) -> VirtualOutputResult<()> {
         let virt = self
             .virtual_outputs
             .outputs
             .remove(name)
-            .ok_or_else(|| format!("virtual output '{}' not found", name))?;
+            .ok_or_else(|| VirtualOutputError::NotFound(name.to_owned()))?;
 
         // Remove from IPC outputs
-        self.ipc_outputs.lock().unwrap().remove(&virt.id);
+        self.ipc_outputs
+            .lock()
+            .map_err(|_| VirtualOutputError::IpcOutputsPoisoned)?
+            .remove(&virt.id);
 
         // Only in the layout while enabled; removing it again would panic.
         if virt.enabled {

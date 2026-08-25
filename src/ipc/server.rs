@@ -484,7 +484,7 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
                 .map_err(|_| String::from("error creating virtual output"))?;
             match result {
                 Ok(name) => Response::VirtualOutputCreated(name),
-                Err(e) => return Err(e),
+                Err(err) => return Err(err.to_string()),
             }
         }
         Request::RemoveVirtualOutput { name } => {
@@ -499,7 +499,7 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
                 .recv()
                 .await
                 .map_err(|_| String::from("error removing virtual output"))?;
-            result?;
+            result.map_err(|err| err.to_string())?;
             Response::Handled
         }
     };
