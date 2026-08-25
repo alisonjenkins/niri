@@ -1647,7 +1647,13 @@ impl<W: LayoutElement> Monitor<W> {
             return false;
         }
 
-        let ws = &self.workspaces[self.active_workspace_idx];
+        // A monitor is supposed to always have a workspace, but a crash here
+        // takes the whole session down, and this runs from the screencast
+        // render path where a transiently empty monitor has been observed.
+        // Refusing to render above the top layer is a harmless answer.
+        let Some(ws) = self.workspaces.get(self.active_workspace_idx) else {
+            return false;
+        };
         ws.render_above_top_layer()
     }
 
