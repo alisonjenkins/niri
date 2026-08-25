@@ -116,6 +116,9 @@ pub enum Msg {
         /// Refresh rate in Hz.
         #[arg(long, default_value = "60")]
         refresh_rate: u32,
+        /// Name for the output, instead of an auto-generated HEADLESS-N.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Remove a virtual headless output.
     ///

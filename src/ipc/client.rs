@@ -45,10 +45,12 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
             width,
             height,
             refresh_rate,
+            name,
         } => Request::CreateVirtualOutput {
             width: Some(*width),
             height: Some(*height),
             refresh_rate: Some(*refresh_rate),
+            name: name.clone(),
         },
         Msg::RemoveVirtualOutput { name } => Request::RemoveVirtualOutput { name: name.clone() },
         Msg::Workspaces => Request::Workspaces,

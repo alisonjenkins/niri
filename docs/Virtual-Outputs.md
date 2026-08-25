@@ -146,6 +146,16 @@ Options:
   --refresh-rate <REFRESH_RATE>  Refresh rate in Hz [default: 60]
 ```
 
+
+Options:
+- `--name <NAME>`: name the output instead of auto-generating `HEADLESS-N`.
+
+A stable name matters to clients that remember a capture source by name. Auto-generated names are sequential, so an output removed and recreated comes back under a different name and the remembered selection silently stops resolving. Creating a named output does not consume a number, so it does not shift later generated names.
+
+```bash
+niri msg create-virtual-output --width 1280 --height 800 --name steam
+# Output: Created virtual output: steam
+```
 ### remove-virtual-output
 
 ```
