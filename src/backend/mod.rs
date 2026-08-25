@@ -261,7 +261,11 @@ impl Backend {
             Backend::Headless(headless) => {
                 headless.create_virtual_output(niri, width, height, refresh_rate, name)
             }
-            Backend::Tty(tty) => tty.create_virtual_output(niri, width, height, refresh_rate, name),
+            // Not declared: an output asked for over IPC belongs to whoever
+            // asked, and must survive a config reload.
+            Backend::Tty(tty) => {
+                tty.create_virtual_output(niri, width, height, refresh_rate, name, false)
+            }
             Backend::Winit(_) => {
                 Err("virtual outputs are not supported with the Winit backend".into())
             }

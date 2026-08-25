@@ -63,6 +63,14 @@ pub struct Output {
     pub max_bpc: Option<MaxBpc>,
     #[knuffel(child)]
     pub mode: Option<Mode>,
+    /// Create this output as a virtual headless one rather than expecting a
+    /// connector to show up for it.
+    ///
+    /// The size comes from `mode`, which also means an already-created virtual
+    /// output can be resized the same way a physical one is reconfigured —
+    /// what a streaming client needs, since each one has its own panel.
+    #[knuffel(child)]
+    pub virtual_output: bool,
     #[knuffel(child)]
     pub modeline: Option<Modeline>,
     #[knuffel(child)]
@@ -105,6 +113,7 @@ impl Default for Output {
             position: None,
             max_bpc: None,
             mode: None,
+            virtual_output: false,
             modeline: None,
             variable_refresh_rate: None,
             background_color: None,
