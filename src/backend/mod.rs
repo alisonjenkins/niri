@@ -9,10 +9,12 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
+use crate::backend::virtual_output::{VirtualOutputError, VirtualOutputResult};
 use crate::niri::Niri;
 use crate::utils::id::IdCounter;
 
 pub mod tty;
+pub mod virtual_output;
 pub use tty::Tty;
 
 pub mod winit;
@@ -256,7 +258,7 @@ impl Backend {
         height: u16,
         refresh_rate: u32,
         name: Option<String>,
-    ) -> Result<String, String> {
+    ) -> VirtualOutputResult<String> {
         match self {
             Backend::Headless(headless) => {
                 headless.create_virtual_output(niri, width, height, refresh_rate, name)
@@ -266,22 +268,22 @@ impl Backend {
             Backend::Tty(tty) => {
                 tty.create_virtual_output(niri, width, height, refresh_rate, name, false)
             }
-            Backend::Winit(_) => {
-                Err("virtual outputs are not supported with the Winit backend".into())
-            }
+            Backend::Winit(_) => Err(VirtualOutputError::UnsupportedBackend("Winit")),
         }
     }
 
     /// Remove a virtual headless output by name.
     ///
     /// This works with both the headless backend and the TTY backend.
-    pub fn remove_virtual_output(&mut self, niri: &mut Niri, name: &str) -> Result<(), String> {
+    pub fn remove_virtual_output(
+        &mut self,
+        niri: &mut Niri,
+        name: &str,
+    ) -> VirtualOutputResult<()> {
         match self {
             Backend::Headless(headless) => headless.remove_virtual_output(niri, name),
             Backend::Tty(tty) => tty.remove_virtual_output(niri, name),
-            Backend::Winit(_) => {
-                Err("virtual outputs are not supported with the Winit backend".into())
-            }
+            Backend::Winit(_) => Err(VirtualOutputError::UnsupportedBackend("Winit")),
         }
     }
 }

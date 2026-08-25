@@ -26,6 +26,7 @@ use smithay::utils::Size;
 use smithay::wayland::presentation::Refresh;
 
 use super::{IpcOutputMap, OutputId, RenderResult};
+use crate::backend::virtual_output::{VirtualOutputError, VirtualOutputResult};
 use crate::niri::{Niri, RedrawState};
 use crate::render_helpers::{resources, shaders};
 use crate::utils::{get_monotonic_time, logical_output};
@@ -140,13 +141,13 @@ impl Headless {
         height: u16,
         refresh_rate: u32,
         name: Option<String>,
-    ) -> Result<String, String> {
+    ) -> VirtualOutputResult<String> {
         let n = self.output_counter + 1;
 
         let connector = match name {
             Some(name) => {
                 if self.outputs.contains_key(&name) {
-                    return Err(format!("output \"{name}\" already exists"));
+                    return Err(VirtualOutputError::NameTaken(name));
                 }
                 name
             }
@@ -226,14 +227,21 @@ impl Headless {
 
     /// Remove a virtual headless output by name.
     /// Returns Ok(()) if successful, Err with message if not found or failed.
-    pub fn remove_virtual_output(&mut self, niri: &mut Niri, name: &str) -> Result<(), String> {
+    pub fn remove_virtual_output(
+        &mut self,
+        niri: &mut Niri,
+        name: &str,
+    ) -> VirtualOutputResult<()> {
         let (output, output_id) = self
             .outputs
             .remove(name)
-            .ok_or_else(|| format!("output '{}' not found", name))?;
+            .ok_or_else(|| VirtualOutputError::NotFound(name.to_owned()))?;
 
         // Remove from IPC outputs
-        self.ipc_outputs.lock().unwrap().remove(&output_id);
+        self.ipc_outputs
+            .lock()
+            .map_err(|_| VirtualOutputError::IpcOutputsPoisoned)?
+            .remove(&output_id);
 
         // Remove from niri
         niri.remove_output(&output);
