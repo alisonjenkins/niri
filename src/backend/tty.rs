@@ -62,7 +62,7 @@ use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 
 use super::{IpcOutputMap, OutputId, RenderResult};
-use crate::backend::virtual_output::{VirtualOutputError, VirtualOutputResult};
+use crate::backend::virtual_output::{physical_size_mm, VirtualOutputError, VirtualOutputResult};
 use crate::frame_clock::FrameClock;
 use crate::niri::{Niri, RedrawState, State};
 use crate::render_helpers::debug::draw_damage;
@@ -2481,7 +2481,9 @@ impl Tty {
         let output = Output::new(
             connector.clone(),
             PhysicalProperties {
-                size: (0, 0).into(),
+                // See `physical_size_mm`: a real `0mm` is honest but gets the
+                // output silently discarded by clients like Steam.
+                size: physical_size_mm(i32::from(width), i32::from(height)),
                 subpixel: smithay::output::Subpixel::Unknown,
                 make: make.clone(),
                 model: model.clone(),
@@ -2636,6 +2638,18 @@ impl Tty {
     /// panels — a handheld at 1280x800 and a television at 3840x2160 — without
     /// removing and recreating it, which would drop the screencast source a
     /// client had already been given.
+    ///
+    /// This does *not* update the output's physical size (see
+    /// `physical_size_mm`) to match the new mode. Smithay's `Output` has no
+    /// way to change `PhysicalProperties` after construction — only
+    /// `change_current_state` for mode/transform/scale/location — and
+    /// `wl_output.geometry` (which carries the physical size) is sent once,
+    /// at bind time, not re-sent on a mode change. Recreating the `Output` to
+    /// pick up a new size would mean a new `wl_global`, defeating the whole
+    /// point of resizing in place above. So a resized declared output keeps
+    /// the physical size it was created with: stale in proportion, but still
+    /// nonzero, which is what actually matters for a client like Steam that
+    /// discards zero-size outputs outright.
     fn resize_virtual_outputs(&mut self, niri: &mut Niri) {
         let resizes: Vec<(String, ConfiguredMode)> = {
             let config = self.config.borrow();

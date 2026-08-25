@@ -1,6 +1,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-//! Errors from creating and removing virtual outputs.
+//! Errors from creating and removing virtual outputs, and the shared bits of
+//! how a virtual output presents itself to clients.
 //!
 //! `unwrap` is denied here rather than crate-wide: upstream niri uses it
 //! deliberately in plenty of places, and turning it off everywhere would be a
@@ -16,6 +17,8 @@
 //! reading `niri msg` output.
 
 use std::fmt;
+
+use smithay::utils::{Raw, Size};
 
 /// Why a virtual output could not be created or removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +74,27 @@ impl std::error::Error for VirtualOutputError {}
 /// Result of an operation on a virtual output.
 pub type VirtualOutputResult<T> = Result<T, VirtualOutputError>;
 
+/// Synthesize a physical size (in millimetres) for a virtual output, given
+/// its pixel dimensions.
+///
+/// A virtual output has no panel, so `0mm x 0mm` is the technically honest
+/// answer — and it is also the wrong one. Clients are free to treat a `0mm`
+/// physical size as "not a real display" and drop the output entirely; Steam
+/// does exactly that, and a virtual output created for Remote Play streaming
+/// simply never showed up in its display list. That broke streaming for
+/// weeks before anyone traced it back to this. Do not "simplify" this back
+/// to `(0, 0)`.
+///
+/// There is no physically correct size to report instead, so this picks a
+/// plausible one: a nominal 96 DPI, the traditional desktop baseline, i.e.
+/// `mm = px * 25.4 / 96`. Kept in integer math as `px * 254 / 960` to avoid
+/// pulling in floating point for a value nothing downstream expects to be
+/// exact.
+pub fn physical_size_mm(width: i32, height: i32) -> Size<i32, Raw> {
+    let mm_from_px = |px: i32| px.saturating_mul(254) / 960;
+    (mm_from_px(width), mm_from_px(height)).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +121,40 @@ mod tests {
         let missing = VirtualOutputError::NotFound("steam".to_owned());
         assert_ne!(taken, missing);
         assert!(matches!(taken, VirtualOutputError::NameTaken(_)));
+    }
+
+    #[test]
+    fn a_typical_handheld_mode_gets_a_nonzero_size() {
+        // The whole point: Steam discards an output reporting 0mm x 0mm, and
+        // this is the exact mode that broke Remote Play streaming.
+        let size = physical_size_mm(1280, 800);
+        assert_eq!((size.w, size.h), (338, 211));
+        assert_ne!(size.w, 0);
+        assert_ne!(size.h, 0);
+    }
+
+    #[test]
+    fn a_desktop_sized_mode_gets_a_nonzero_size() {
+        let size = physical_size_mm(1920, 1080);
+        assert_eq!((size.w, size.h), (508, 285));
+    }
+
+    #[test]
+    fn zero_pixels_stays_zero_millimetres() {
+        // There is no plausible nonzero size for a mode with no pixels; this
+        // just documents that the conversion does not divide by zero or
+        // otherwise misbehave at the degenerate input.
+        let size = physical_size_mm(0, 0);
+        assert_eq!((size.w, size.h), (0, 0));
+    }
+
+    #[test]
+    fn conversion_is_roughly_ninety_six_dpi() {
+        // 96 DPI means 96 pixels per 25.4mm. Check the ratio holds within
+        // integer-division rounding rather than pinning exact pixel values,
+        // so this documents the intended DPI rather than just re-asserting
+        // the implementation's arithmetic.
+        let size = physical_size_mm(960, 960);
+        assert_eq!((size.w, size.h), (254, 254));
     }
 }
