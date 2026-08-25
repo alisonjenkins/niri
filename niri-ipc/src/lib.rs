@@ -109,6 +109,12 @@ pub enum Request {
         height: Option<u16>,
         /// Refresh rate in Hz. Defaults to 60 if not specified.
         refresh_rate: Option<u32>,
+        /// Name for the output. Auto-generated (HEADLESS-N) if not specified.
+        ///
+        /// A stable name matters to clients that remember a capture source by
+        /// name: an auto-generated one changes whenever outputs are created
+        /// and removed, silently invalidating the remembered selection.
+        name: Option<String>,
     },
     /// Remove a virtual headless output by name.
     ///

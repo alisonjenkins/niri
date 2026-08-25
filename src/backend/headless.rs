@@ -139,11 +139,25 @@ impl Headless {
         width: u16,
         height: u16,
         refresh_rate: u32,
-    ) -> String {
-        self.output_counter += 1;
-        let n = self.output_counter;
+        name: Option<String>,
+    ) -> Result<String, String> {
+        let n = self.output_counter + 1;
 
-        let connector = format!("HEADLESS-{n}");
+        let connector = match name {
+            Some(name) => {
+                if self.outputs.contains_key(&name) {
+                    return Err(format!("output \"{name}\" already exists"));
+                }
+                name
+            }
+            None => {
+                // Only consume a counter value when generating a name, so an
+                // explicitly named output does not shift the numbering of
+                // later generated ones.
+                self.output_counter = n;
+                format!("HEADLESS-{n}")
+            }
+        };
         let make = "niri".to_string();
         let model = "virtual".to_string();
         let serial = n.to_string();
@@ -207,7 +221,7 @@ impl Headless {
         let refresh_interval = Duration::from_nanos(1_000_000_000 / u64::from(refresh_rate));
         niri.add_output(output, Some(refresh_interval), false);
 
-        connector
+        Ok(connector)
     }
 
     /// Remove a virtual headless output by name.

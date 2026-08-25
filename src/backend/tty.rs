@@ -2403,11 +2403,25 @@ impl Tty {
         width: u16,
         height: u16,
         refresh_rate: u32,
-    ) -> String {
-        self.virtual_outputs.counter += 1;
-        let n = self.virtual_outputs.counter;
+        name: Option<String>,
+    ) -> Result<String, String> {
+        let n = self.virtual_outputs.counter + 1;
 
-        let connector = format!("HEADLESS-{n}");
+        let connector = match name {
+            Some(name) => {
+                if self.virtual_outputs.outputs.contains_key(&name) {
+                    return Err(format!("output \"{name}\" already exists"));
+                }
+                name
+            }
+            None => {
+                // Only consume a counter value when generating a name, so an
+                // explicitly named output does not shift the numbering of
+                // later generated ones.
+                self.virtual_outputs.counter = n;
+                format!("HEADLESS-{n}")
+            }
+        };
         let make = "niri".to_string();
         let model = "virtual".to_string();
         let serial = n.to_string();
@@ -2457,7 +2471,7 @@ impl Tty {
 
         niri.add_output(output, Some(virtual_refresh_interval(refresh_rate)), false);
 
-        connector
+        Ok(connector)
     }
 
     /// Take virtual outputs in and out of the layout to match `off` in config.
