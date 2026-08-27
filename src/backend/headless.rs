@@ -304,7 +304,14 @@ impl Headless {
         let token = niri
             .event_loop
             .insert_source(timer, move |_, _, data| {
-                let output_state = data.niri.output_state.get_mut(&output_clone).unwrap();
+                // The output can be removed while this timer is still pending,
+                // and the callback then runs against state that has already
+                // been dropped. Unwrapping there took the whole compositor
+                // down; there is simply nothing left to redraw, so let the
+                // timer go.
+                let Some(output_state) = data.niri.output_state.get_mut(&output_clone) else {
+                    return TimeoutAction::Drop;
+                };
                 output_state.frame_callback_sequence =
                     output_state.frame_callback_sequence.wrapping_add(1);
 

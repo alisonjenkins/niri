@@ -465,6 +465,16 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             let width = width.unwrap_or(1920);
             let height = height.unwrap_or(1080);
             let refresh_rate = refresh_rate.unwrap_or(60);
+
+            // Rejected rather than clamped: both backends turn this into a
+            // frame interval with 1_000_000_000 / refresh_rate, so a zero from
+            // any client on the socket divides by zero and takes the whole
+            // compositor down with it. A zero-hertz output has no sensible
+            // meaning to substitute either.
+            if refresh_rate == 0 {
+                return Err(String::from("refresh rate must be at least 1 Hz"));
+            }
+
             let (tx, rx) = async_channel::bounded(1);
 
             ctx.event_loop.insert_idle(move |state| {
