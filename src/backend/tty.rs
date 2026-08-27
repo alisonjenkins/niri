@@ -2619,7 +2619,7 @@ impl Tty {
                             .outputs
                             .0
                             .iter()
-                            .any(|c| c.virtual_output && &&c.name == name)
+                            .any(|c| c.virtual_output && c.name == **name)
                 })
                 .map(|(name, _)| name.clone())
                 .collect()
