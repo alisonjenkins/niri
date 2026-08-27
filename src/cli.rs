@@ -104,8 +104,7 @@ pub enum Msg {
     },
     /// Create a virtual headless output.
     ///
-    /// This only works when niri is running with the headless backend
-    /// (e.g. with `NIRI_BACKEND=headless`).
+    /// Works on the TTY and headless backends. Not supported under Winit.
     CreateVirtualOutput {
         /// Width in pixels.
         #[arg(long, default_value = "1920")]
@@ -122,7 +121,7 @@ pub enum Msg {
     },
     /// Remove a virtual headless output.
     ///
-    /// This only works when niri is running with the headless backend.
+    /// Works on the TTY and headless backends. Not supported under Winit.
     RemoveVirtualOutput {
         /// Name of the output to remove (e.g. "HEADLESS-1").
         #[arg()]
