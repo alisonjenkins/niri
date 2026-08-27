@@ -333,6 +333,28 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
+    /// Set fullscreen on a window.
+    ///
+    /// Unlike `FullscreenWindow`, this says what the state should be rather than
+    /// asking for it to be flipped, so it is idempotent and safe to send without
+    /// knowing the current state — which the IPC does not expose.
+    #[cfg_attr(
+        feature = "clap",
+        clap(about = "Set fullscreen on the focused window")
+    )]
+    SetWindowFullscreen {
+        /// Id of the window to set the fullscreen state of.
+        ///
+        /// If `None`, uses the focused window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+        /// Whether the window should be fullscreen.
+        #[cfg_attr(
+            feature = "clap",
+            arg(long, action = clap::ArgAction::Set, default_value_t = true)
+        )]
+        is_fullscreen: bool,
+    },
     /// Toggle windowed (fake) fullscreen on a window.
     #[cfg_attr(
         feature = "clap",

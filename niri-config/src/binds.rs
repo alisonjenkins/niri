@@ -154,6 +154,9 @@ pub enum Action {
     FullscreenWindow,
     #[knuffel(skip)]
     FullscreenWindowById(u64),
+    SetWindowFullscreen(#[knuffel(argument)] bool),
+    #[knuffel(skip)]
+    SetWindowFullscreenById(u64, bool),
     ToggleWindowedFullscreen,
     #[knuffel(skip)]
     ToggleWindowedFullscreenById(u64),
@@ -440,6 +443,14 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::CloseWindow { id: Some(id) } => Self::CloseWindowById(id),
             niri_ipc::Action::FullscreenWindow { id: None } => Self::FullscreenWindow,
             niri_ipc::Action::FullscreenWindow { id: Some(id) } => Self::FullscreenWindowById(id),
+            niri_ipc::Action::SetWindowFullscreen {
+                id: None,
+                is_fullscreen,
+            } => Self::SetWindowFullscreen(is_fullscreen),
+            niri_ipc::Action::SetWindowFullscreen {
+                id: Some(id),
+                is_fullscreen,
+            } => Self::SetWindowFullscreenById(id, is_fullscreen),
             niri_ipc::Action::ToggleWindowedFullscreen { id: None } => {
                 Self::ToggleWindowedFullscreen
             }
