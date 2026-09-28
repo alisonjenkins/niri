@@ -134,6 +134,19 @@ struct VirtualOutput {
     declared: bool,
 }
 
+impl VirtualOutput {
+    /// Take the output out of use, returning the Output that was live so it can be
+    /// removed from the layout.
+    ///
+    /// The one kept for turning it back on is new, so no client resource is ever
+    /// attached to a disabled output and a resize while off reaches nobody.
+    fn turn_off(&mut self) -> Output {
+        self.enabled = false;
+        let rebuilt = rebuild_virtual_output(&self.output);
+        mem::replace(&mut self.output, rebuilt)
+    }
+}
+
 /// Size and rate a declared virtual output should have.
 ///
 /// A virtual output has no connector to advertise modes, so `mode` is the only
@@ -176,6 +189,25 @@ fn with_virtual_outputs<'a>(
             virtual_ipc_output(&virt.output, virt.refresh_rate, virt.enabled),
         );
     }
+}
+
+/// A new Output with the same identity and current mode as `output`.
+///
+/// A virtual output must not keep its Output across being turned off: smithay keeps the
+/// xdg_output resources on the Output, not on its global, so any later mode change or
+/// re-add sends events to objects clients already dropped, and GTK 3 writes those into
+/// freed memory.
+fn rebuild_virtual_output(output: &Output) -> Output {
+    let rebuilt = Output::new(output.name(), output.physical_properties());
+    if let Some(mode) = output.current_mode() {
+        rebuilt.change_current_state(Some(mode), None, None, None);
+        rebuilt.set_preferred(mode);
+    }
+    if let Some(name) = output.user_data().get::<OutputName>() {
+        let name = name.clone();
+        rebuilt.user_data().insert_if_missing(|| name);
+    }
+    rebuilt
 }
 
 /// Refresh interval matching the rate a virtual output advertises.
@@ -2563,13 +2595,17 @@ impl Tty {
             let Some(virt) = self.virtual_outputs.outputs.get_mut(&name) else {
                 continue;
             };
-            virt.enabled = enable;
-            let output = virt.output.clone();
-            let refresh_rate = virt.refresh_rate;
             if enable {
-                niri.add_output(output, Some(virtual_refresh_interval(refresh_rate)), false);
+                virt.enabled = true;
+                let refresh_rate = virt.refresh_rate;
+                niri.add_output(
+                    virt.output.clone(),
+                    Some(virtual_refresh_interval(refresh_rate)),
+                    false,
+                );
             } else {
-                niri.remove_output(&output);
+                let live = virt.turn_off();
+                niri.remove_output(&live);
             }
         }
     }
@@ -4023,13 +4059,14 @@ unsafe fn init_libinput_plugin_system(libinput: &Libinput) {
 mod tests {
     use insta::assert_debug_snapshot;
     use niri_config::output::Modeline;
+    use niri_config::OutputName;
     use niri_ipc::{HSyncPolarity, VSyncPolarity};
     use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 
     use crate::backend::tty::{
         calculate_drm_mode_from_modeline, calculate_mode_cvt, configured_refresh_rate,
-        declared_virtual_mode, virtual_output_transition, with_virtual_outputs, ConfiguredMode,
-        IpcOutputMap, OutputId, VirtualOutput,
+        declared_virtual_mode, rebuild_virtual_output, virtual_output_transition,
+        with_virtual_outputs, ConfiguredMode, IpcOutputMap, OutputId, VirtualOutput,
     };
 
     fn virtual_output(enabled: bool) -> VirtualOutput {
@@ -4097,6 +4134,67 @@ mod tests {
         // Back in the layout, so it reports a place in it again — which is
         // what makes it usable as a screencast target.
         assert!(listed.logical.is_some());
+    }
+
+    #[test]
+    fn turning_a_virtual_output_back_on_gives_it_a_fresh_output() {
+        // Regression: re-adding the same Output re-sent xdg_output events to
+        // proxies clients had orphaned when the old global went away; GTK 3
+        // wrote them into freed monitors and crashed later on heap corruption.
+        let virt = virtual_output(false);
+        virt.output.user_data().insert_if_missing(|| OutputName {
+            connector: "steam".to_owned(),
+            make: Some("niri".to_owned()),
+            model: Some("virtual".to_owned()),
+            serial: Some("1".to_owned()),
+        });
+        let stale = Mode {
+            size: (2880, 1800).into(),
+            refresh: 90_000,
+        };
+        virt.output.add_mode(stale);
+
+        let rebuilt = rebuild_virtual_output(&virt.output);
+
+        assert_ne!(rebuilt, virt.output);
+        assert_eq!(rebuilt.name(), "steam");
+        assert_eq!(
+            format!("{:?}", rebuilt.physical_properties()),
+            format!("{:?}", virt.output.physical_properties())
+        );
+        assert_eq!(rebuilt.current_mode(), virt.output.current_mode());
+        assert_eq!(rebuilt.preferred_mode(), virt.output.current_mode());
+        assert_eq!(rebuilt.modes(), vec![virt.output.current_mode().unwrap()]);
+        let name = rebuilt
+            .user_data()
+            .get::<OutputName>()
+            .expect("name is kept");
+        assert_eq!(name.connector, "steam");
+        assert_eq!(name.serial.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn turning_a_virtual_output_off_detaches_it_from_the_live_output() {
+        // Regression: a resize runs before an output is turned back on, so the
+        // Output kept while off must already be a new one, or the resize sends
+        // logical_size to xdg_output objects clients dropped with the old global.
+        let mut virt = virtual_output(true);
+        let live = virt.output.clone();
+
+        let removed = virt.turn_off();
+
+        assert_eq!(removed, live);
+        assert_ne!(virt.output, live);
+        assert!(!virt.enabled);
+        assert_eq!(virt.output.name(), "steam");
+
+        let resized = Mode {
+            size: (1728, 1080).into(),
+            refresh: 60_000,
+        };
+        virt.output
+            .change_current_state(Some(resized), None, None, None);
+        assert_ne!(live.current_mode(), Some(resized));
     }
 
     #[test]
