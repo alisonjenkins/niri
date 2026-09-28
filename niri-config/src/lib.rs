@@ -1132,6 +1132,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_view_output_bind() {
+        let parsed = do_parse(
+            r#"
+            binds {
+                Mod+V { view-output "steam"; }
+                Mod+Shift+V { view-output; }
+            }
+            "#,
+        );
+
+        assert_eq!(parsed.binds.0.len(), 2);
+        assert_eq!(
+            parsed.binds.0[0].action,
+            BoundAction::Press(Action::ViewOutput(Some("steam".to_owned()))),
+        );
+        assert_eq!(
+            parsed.binds.0[1].action,
+            BoundAction::Press(Action::ViewOutput(None))
+        );
+    }
+
+    #[test]
     fn parse_on_xdg_activate() {
         let parsed = do_parse(
             r#"
