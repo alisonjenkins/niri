@@ -1015,6 +1015,32 @@ mod overview_tests {
             );
         }
     }
+
+    #[test]
+    fn redrawing_a_source_redraws_its_viewers_and_not_the_reverse() {
+        let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
+        open_overview(&mut f);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+
+        let frames =
+            |niri: &Niri, output: &Output| niri.output_state[output].frame_callback_sequence;
+
+        let state = f.niri_state();
+        state.niri.redraw_queued_outputs(&mut state.backend);
+        let viewer_frames = frames(&state.niri, &viewer);
+        let steam_frames = frames(&state.niri, &steam);
+
+        state.niri.queue_redraw(&steam);
+        state.niri.redraw_queued_outputs(&mut state.backend);
+        assert_eq!(frames(&state.niri, &steam), steam_frames + 1);
+        assert_eq!(frames(&state.niri, &viewer), viewer_frames + 1);
+
+        state.niri.queue_redraw(&viewer);
+        state.niri.redraw_queued_outputs(&mut state.backend);
+        assert_eq!(frames(&state.niri, &steam), steam_frames + 1);
+        assert_eq!(frames(&state.niri, &viewer), viewer_frames + 2);
+    }
 }
 
 mod render_tests {

@@ -4117,6 +4117,28 @@ impl Niri {
         state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
     }
 
+    /// Queues a redraw of every viewer that shows `source` through a
+    /// projection, so the viewer picks up the source's new frame.
+    ///
+    /// Viewers are physical outputs and never sources, so a viewer's own
+    /// redraw queues nothing here and this cannot loop.
+    fn queue_redraw_projection_viewers(&mut self, source: &Output) {
+        let source_name = source.name();
+        for projection in &self.projection_state.projections {
+            if projection.source != source_name {
+                continue;
+            }
+            let Some(state) = self
+                .output_state
+                .iter_mut()
+                .find_map(|(output, state)| (output.name() == projection.viewer).then_some(state))
+            else {
+                continue;
+            };
+            state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+        }
+    }
+
     pub fn redraw_queued_outputs(&mut self, backend: &mut Backend) {
         let _span = tracy_client::span!("Niri::redraw_queued_outputs");
 
@@ -5135,6 +5157,8 @@ impl Niri {
 
             // Render.
             res = backend.render(self, output, target_presentation_time);
+
+            self.queue_redraw_projection_viewers(output);
         }
 
         let is_locked = self.is_locked();
