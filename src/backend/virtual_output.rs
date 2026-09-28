@@ -61,8 +61,8 @@ pub enum VirtualOutputError {
     /// The virtual output exists but is turned off.
     Disabled(String),
 
-    /// There is no physical output to show the virtual output on.
-    NoViewer,
+    /// There is no physical output to show the named virtual output on.
+    NoViewer(String),
 }
 
 impl fmt::Display for VirtualOutputError {
@@ -92,8 +92,8 @@ impl fmt::Display for VirtualOutputError {
             VirtualOutputError::Disabled(name) => {
                 write!(f, "virtual output \"{name}\" is off")
             }
-            VirtualOutputError::NoViewer => {
-                write!(f, "no physical output to view it on")
+            VirtualOutputError::NoViewer(name) => {
+                write!(f, "no physical output to view \"{name}\" on")
             }
         }
     }
@@ -225,8 +225,8 @@ mod tests {
             "virtual output \"steam\" is off"
         );
         assert_eq!(
-            VirtualOutputError::NoViewer.to_string(),
-            "no physical output to view it on"
+            VirtualOutputError::NoViewer("steam".to_owned()).to_string(),
+            "no physical output to view \"steam\" on"
         );
     }
 
@@ -240,7 +240,7 @@ mod tests {
         let disabled = VirtualOutputError::Disabled("steam".to_owned());
         assert_ne!(taken, missing);
         assert_ne!(not_virtual, disabled);
-        assert_ne!(disabled, VirtualOutputError::NoViewer);
+        assert_ne!(disabled, VirtualOutputError::NoViewer("steam".to_owned()));
         assert!(matches!(taken, VirtualOutputError::NameTaken(_)));
         assert!(matches!(not_virtual, VirtualOutputError::NotVirtual(_)));
     }
