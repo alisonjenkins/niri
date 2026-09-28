@@ -1135,6 +1135,34 @@ mod render_tests {
     }
 
     #[test]
+    fn overview_labels_each_column_with_its_source_name() {
+        let mut f = set_up(&[("steam", 1280, 800), ("aux", 1920, 1080)]);
+        let viewer = f.niri_output(1);
+        let scale = Scale::from(viewer.current_scale().fractional_scale());
+        let projections = overview_projections(&mut f);
+
+        let elements = render(&mut f, &viewer);
+        let textures: Vec<_> = elements
+            .iter()
+            .filter(|e| matches!(e, OutputRenderElements::Texture(_)))
+            .map(|e| e.geometry(scale))
+            .collect();
+
+        for projection in &projections {
+            let region = physical(projection.region, scale);
+            assert!(
+                textures.iter().any(|geo| {
+                    geo.loc.y + geo.size.h <= region.loc.y
+                        && geo.loc.x >= region.loc.x
+                        && geo.loc.x + geo.size.w <= region.loc.x + region.size.w
+                }),
+                "no label above the {} column {region:?}: {textures:?}",
+                projection.source
+            );
+        }
+    }
+
+    #[test]
     fn rendering_a_source_never_includes_projections() {
         let mut f = set_up(&[("steam", 1280, 800)]);
         let steam = f
