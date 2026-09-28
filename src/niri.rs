@@ -153,6 +153,7 @@ use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement,
 };
 use crate::niri_render_elements;
+use crate::projection::ProjectionState;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
 use crate::protocols::gamma_control::GammaControlManagerState;
@@ -438,6 +439,9 @@ pub struct Niri {
 
     #[cfg(test)]
     pub test_action_count: usize,
+
+    /// Which virtual outputs are projected onto which physical monitors.
+    pub projection_state: ProjectionState,
 }
 
 smithay::delegate_dispatch2!(State);
@@ -2782,6 +2786,8 @@ impl Niri {
 
             #[cfg(test)]
             test_action_count: 0,
+
+            projection_state: ProjectionState::default(),
         };
 
         niri.reset_pointer_inactivity_timer();
