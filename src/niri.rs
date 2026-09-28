@@ -168,6 +168,7 @@ use crate::protocols::virtual_pointer::VirtualPointerManagerState;
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::debug::push_opaque_regions;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
+use crate::render_helpers::projected::ProjectedElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::surface::push_elements_from_surface_tree;
@@ -4854,6 +4855,8 @@ impl Niri {
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
+            self.render_overview_projections(ctx.r(), output, push);
+
             for (ws, geo) in mon.workspaces_with_render_geo() {
                 // The render element namespace. This will be set to the workspace index for
                 // elements duplicated across workspaces (i.e. background and bottom layers) in
@@ -4879,6 +4882,55 @@ impl Niri {
         push_normal_from_layer!(Layer::Background, true);
 
         push(backdrop);
+    }
+
+    /// Renders each source projected into `viewer`'s overview, scaled into its
+    /// column region.
+    fn render_overview_projections<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        viewer: &Output,
+        push: &mut dyn FnMut(OutputRenderElements<R>),
+    ) {
+        // A virtual output never shows other outputs (FR-018). This also
+        // keeps the nested render of a source below from recursing.
+        if is_virtual_output(viewer) {
+            return;
+        }
+
+        let viewer_name = viewer.name();
+        let viewer_scale = viewer.current_scale().fractional_scale();
+        for projection in self
+            .projection_state
+            .projections
+            .iter()
+            .filter(|p| p.kind == ProjectionKind::Overview && p.viewer == viewer_name)
+        {
+            // rebuild_projections runs whenever outputs change, so a missing
+            // source only means this frame raced a removal.
+            let Some(source) = self
+                .layout
+                .outputs()
+                .find(|o| o.name() == projection.source)
+            else {
+                continue;
+            };
+            let source_scale = source.current_scale().fractional_scale();
+            let crop = projection.region.to_physical_precise_round(viewer_scale);
+
+            self.render(ctx.r(), source, false, &mut |elem| {
+                let elem = ProjectedElement::new(
+                    elem,
+                    source_scale,
+                    projection.source_rect,
+                    viewer_scale,
+                    projection.region,
+                );
+                if let Some(elem) = CropRenderElement::from_element(elem, viewer_scale, crop) {
+                    push(OutputRenderElements::Projected(elem));
+                }
+            });
+        }
     }
 
     pub fn fill_xray_elements(&self, mut ctx: RenderCtx<GlesRenderer>, output: &Output) {
@@ -7482,5 +7534,7 @@ niri_render_elements! {
         Texture = PrimaryGpuTextureRenderElement,
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
+        // Another output's elements shown in a projection's region.
+        Projected = CropRenderElement<ProjectedElement<OutputRenderElements<R>>>,
     }
 }

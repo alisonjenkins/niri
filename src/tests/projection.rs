@@ -1016,3 +1016,138 @@ mod overview_tests {
         }
     }
 }
+
+mod render_tests {
+    use smithay::backend::renderer::element::Element as _;
+    use smithay::backend::renderer::gles::GlesRenderer;
+    use smithay::output::Output;
+    use smithay::utils::{Logical, Physical, Rectangle, Scale};
+
+    use crate::niri::OutputRenderElements;
+    use crate::projection::{Projection, ProjectionKind};
+    use crate::render_helpers::{RenderCtx, RenderTarget};
+    use crate::tests::fixture::Fixture;
+
+    fn set_up(sources: &[(&str, u16, u16)]) -> Fixture {
+        let mut f = Fixture::new();
+        f.niri_state().backend.headless().add_renderer().unwrap();
+        f.add_output(1, (5120, 1440));
+        for (name, w, h) in sources {
+            let state = f.niri_state();
+            state
+                .backend
+                .headless()
+                .create_virtual_output(&mut state.niri, *w, *h, 60, Some(name.to_string()))
+                .unwrap();
+        }
+
+        let id = f.add_client();
+        for (name, _, _) in sources {
+            let output = f
+                .niri()
+                .layout
+                .outputs()
+                .find(|o| o.name() == *name)
+                .unwrap()
+                .clone();
+            f.niri().layout.focus_output(&output);
+            let window = f.client(id).create_window();
+            let surface = window.surface.clone();
+            window.commit();
+            f.roundtrip(id);
+            let window = f.client(id).window(&surface);
+            window.attach_new_buffer();
+            window.set_size(300, 200);
+            window.ack_last_and_commit();
+            f.double_roundtrip(id);
+        }
+
+        f.niri().layout.toggle_overview();
+        f.niri_complete_animations();
+        f
+    }
+
+    fn render(f: &mut Fixture, output: &Output) -> Vec<OutputRenderElements<GlesRenderer>> {
+        f.niri().update_render_elements(None);
+        let state = f.niri_state();
+        let niri = &state.niri;
+        state
+            .backend
+            .headless()
+            .with_primary_renderer(|renderer| {
+                let ctx = RenderCtx {
+                    renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                niri.render_to_vec(ctx, output, false)
+            })
+            .unwrap()
+    }
+
+    fn overview_projections(f: &mut Fixture) -> Vec<Projection> {
+        let projections: Vec<_> = f
+            .niri()
+            .projection_state
+            .projections
+            .iter()
+            .filter(|p| p.kind == ProjectionKind::Overview)
+            .cloned()
+            .collect();
+        assert!(!projections.is_empty());
+        projections
+    }
+
+    fn physical(rect: Rectangle<f64, Logical>, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        rect.to_physical_precise_round(scale)
+    }
+
+    #[test]
+    fn overview_renders_each_source_inside_its_region() {
+        let mut f = set_up(&[("steam", 1280, 800), ("aux", 1920, 1080)]);
+        let viewer = f.niri_output(1);
+        let scale = Scale::from(viewer.current_scale().fractional_scale());
+        let projections = overview_projections(&mut f);
+        let regions: Vec<_> = projections
+            .iter()
+            .map(|p| physical(p.region, scale))
+            .collect();
+
+        let elements = render(&mut f, &viewer);
+        let projected: Vec<_> = elements
+            .iter()
+            .filter(|e| matches!(e, OutputRenderElements::Projected(_)))
+            .map(|e| e.geometry(scale))
+            .collect();
+
+        for region in &regions {
+            assert!(
+                projected.iter().any(|geo| region.contains_rect(*geo)),
+                "no projected element inside {region:?}: {projected:?}"
+            );
+        }
+        for geo in &projected {
+            assert!(
+                regions.iter().any(|region| region.contains_rect(*geo)),
+                "projected element {geo:?} outside every region {regions:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rendering_a_source_never_includes_projections() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let steam = f
+            .niri()
+            .layout
+            .outputs()
+            .find(|o| o.name() == "steam")
+            .unwrap()
+            .clone();
+
+        let elements = render(&mut f, &steam);
+        assert!(!elements
+            .iter()
+            .any(|e| matches!(e, OutputRenderElements::Projected(_))));
+    }
+}
