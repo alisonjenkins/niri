@@ -111,6 +111,53 @@ fn constructor_rejects_empty_region() {
 }
 
 #[test]
+fn constructor_rejects_non_finite_rects() {
+    let good = rect(0., 0., 1728., 1080.);
+    for bad in [
+        // A NaN size cannot be built at all: smithay's `Size` asserts on it in debug builds.
+        rect(f64::NAN, 0., 1728., 1080.),
+        rect(0., 0., f64::INFINITY, 1080.),
+        rect(0., f64::NEG_INFINITY, 1728., 1080.),
+    ] {
+        let as_source = Projection::new(
+            "viewer".to_string(),
+            "source".to_string(),
+            bad,
+            good,
+            ProjectionKind::View,
+        );
+        assert!(
+            matches!(as_source, Err(ProjectionError::EmptySourceRect { .. })),
+            "{bad:?} accepted as source_rect: {as_source:?}"
+        );
+
+        let as_region = Projection::new(
+            "viewer".to_string(),
+            "source".to_string(),
+            good,
+            bad,
+            ProjectionKind::View,
+        );
+        assert!(
+            matches!(as_region, Err(ProjectionError::EmptyRegion { .. })),
+            "{bad:?} accepted as region: {as_region:?}"
+        );
+    }
+}
+
+#[test]
+fn letterbox_of_an_empty_source_is_empty_not_nan() {
+    for source in [size(0., 800.), size(1280., 0.), size(0., 0.)] {
+        let r = letterbox(source, size(5120., 1440.));
+        assert!(
+            r.loc.x.is_finite() && r.loc.y.is_finite(),
+            "letterbox({source:?}) gave a non-finite location: {r:?}"
+        );
+        assert_eq!(r.size, size(0., 0.), "letterbox({source:?})");
+    }
+}
+
+#[test]
 fn constructor_rejects_aspect_ratio_mismatch() {
     let err = Projection::new(
         "viewer".to_string(),
