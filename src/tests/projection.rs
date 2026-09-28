@@ -512,7 +512,7 @@ fn global_space_output_under_is_used_only_in_niri_output_under_and_the_motion_cl
     assert_eq!(
         hits,
         vec![("input/mod.rs".to_string(), 2), ("niri.rs".to_string(), 1)],
-        "global_space.output_under must be used only inside Niri::output_under (src/niri.rs) \
+        "global_space.output_under must be used only inside Niri::resolve_output_under (src/niri.rs) \
          and the pointer-motion clamp (src/input/mod.rs); every other caller should go through \
          Niri::output_under so pointer positions are resolved through projections"
     );
@@ -529,7 +529,7 @@ mod overview_tests {
 
     use crate::layout::HitType;
     use crate::niri::Niri;
-    use crate::projection::{Projection, ProjectionKind};
+    use crate::projection::{Projection, ProjectionKind, Viewing};
     use crate::tests::client::ClientId;
     use crate::tests::fixture::Fixture;
 
@@ -727,6 +727,50 @@ mod overview_tests {
         let contents = f.niri().contents_under(p);
         assert_eq!(contents.output.as_ref(), Some(&steam));
         assert_eq!(contents.window.map(|(w, _)| w), Some(window));
+    }
+
+    #[test]
+    fn projected_surface_local_position_is_exact_under_scaling() {
+        // A View projection scales steam by 1.35 onto the viewer; the
+        // surface-local position smithay derives (pointer - focus location)
+        // must still be the true position within the window's surface.
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let window = map_window_on(&mut f, id, &steam, 400, 300);
+        let viewer = f.niri_output(1);
+
+        f.niri().projection_state.viewing = Some(Viewing {
+            viewer: viewer.name(),
+            source: "steam".to_string(),
+        });
+        f.niri().rebuild_projections();
+
+        let niri = f.niri();
+        let projection = niri.projection_state.projections[0].clone();
+        assert!((projection.scale() - 1.35).abs() < 1e-9);
+
+        for offset in [(0., 0.), (-50., -40.), (37.5, 21.25)] {
+            let source_pos = window_center_on(niri, &steam, &window) + Point::from(offset);
+            let pointer = projection.to_viewer(source_pos) + viewer_origin(niri, &viewer);
+
+            let Some((_, HitType::Input { win_pos })) =
+                niri.layout.window_under(&steam, source_pos)
+            else {
+                panic!("no input hit on steam at {source_pos:?}");
+            };
+            let expected_local = source_pos - win_pos;
+
+            let contents = niri.contents_under(pointer);
+            let (surface, focus_loc) = contents.surface.unwrap();
+            assert_eq!(Some(&surface), window.wl_surface().as_deref());
+            let local = pointer - focus_loc;
+            assert!(
+                (local.x - expected_local.x).abs() <= 1.
+                    && (local.y - expected_local.y).abs() <= 1.,
+                "surface-local {local:?}, expected {expected_local:?} (pointer {pointer:?})"
+            );
+        }
     }
 
     #[test]

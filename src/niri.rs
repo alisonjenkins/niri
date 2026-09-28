@@ -580,6 +580,15 @@ pub struct PointContents {
     pub hot_corner: bool,
 }
 
+/// An output under a global position, from [`Niri::resolve_output_under`].
+struct OutputUnder<'a> {
+    output: &'a Output,
+    pos_within_output: Point<f64, Logical>,
+    /// The position lies in a projection's region on a viewer, so `output`
+    /// is the projection's source and not where the pointer really is.
+    projected: bool,
+}
+
 #[derive(Debug, Default)]
 pub enum LockState {
     #[default]
@@ -3412,6 +3421,13 @@ impl Niri {
     /// is there to hit, since a `View` projection replaces the viewer's own
     /// content entirely. Any other position passes through unchanged.
     pub fn output_under(&self, pos: Point<f64, Logical>) -> Option<(&Output, Point<f64, Logical>)> {
+        self.resolve_output_under(pos)
+            .map(|hit| (hit.output, hit.pos_within_output))
+    }
+
+    /// [`Self::output_under`], also saying whether the position went
+    /// through a projection.
+    fn resolve_output_under(&self, pos: Point<f64, Logical>) -> Option<OutputUnder<'_>> {
         let output = self.global_space.output_under(pos).next()?;
         let Some(output_geo) = self.global_space.output_geometry(output) else {
             debug!(output = %output.name(), "output has no geometry in global_space");
@@ -3438,7 +3454,11 @@ impl Niri {
                     );
                     continue;
                 };
-                return Some((source, source_pos));
+                return Some(OutputUnder {
+                    output: source,
+                    pos_within_output: source_pos,
+                    projected: true,
+                });
             }
 
             if projection.kind == ProjectionKind::View {
@@ -3450,7 +3470,11 @@ impl Niri {
             return None;
         }
 
-        Some((output, pos_within_output))
+        Some(OutputUnder {
+            output,
+            pos_within_output,
+            projected: false,
+        })
     }
 
     fn is_inside_hot_corner(&self, output: &Output, pos: Point<f64, Logical>) -> bool {
@@ -3682,11 +3706,32 @@ impl Niri {
     pub fn contents_under(&self, pos: Point<f64, Logical>) -> PointContents {
         let mut rv = PointContents::default();
 
-        let Some((output, pos_within_output)) = self.output_under(pos) else {
+        let Some(hit) = self.resolve_output_under(pos) else {
             return rv;
         };
+        let OutputUnder {
+            output,
+            pos_within_output,
+            projected,
+        } = hit;
         rv.output = Some(output.clone());
-        let output_pos_in_global_space = self.global_space.output_geometry(output).unwrap().loc;
+        let Some(output_geo) = self.global_space.output_geometry(output) else {
+            debug!(output = %output.name(), "output has no geometry in global_space");
+            return rv;
+        };
+        let output_pos_in_global_space = output_geo.loc.to_f64();
+
+        // Smithay derives surface-local pointer coordinates as pointer location minus focus
+        // location. A projected hit's surface really lives on the source output while the pointer
+        // stays on the viewer, so its focus location is synthesized from the pointer position to
+        // keep the surface-local position exact at any projection scale.
+        let focus_location = |surface_origin_within_output: Point<f64, Logical>| {
+            if projected {
+                pos - (pos_within_output - surface_origin_within_output)
+            } else {
+                surface_origin_within_output + output_pos_in_global_space
+            }
+        };
 
         // The ordering here must be consistent with the ordering in render() so that input is
         // consistent with the visuals.
@@ -3708,12 +3753,7 @@ impl Niri {
                 (0, 0),
                 WindowSurfaceType::ALL,
             )
-            .map(|(surface, pos_within_output)| {
-                (
-                    surface,
-                    (pos_within_output + output_pos_in_global_space).to_f64(),
-                )
-            });
+            .map(|(surface, surface_origin)| (surface, focus_location(surface_origin.to_f64())));
 
             return rv;
         }
@@ -3847,7 +3887,7 @@ impl Niri {
         };
 
         if let Some((_, surface_pos)) = &mut surface_and_pos {
-            *surface_pos += output_pos_in_global_space.to_f64();
+            *surface_pos = focus_location(*surface_pos);
         }
 
         rv.surface = surface_and_pos;
