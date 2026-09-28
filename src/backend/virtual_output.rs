@@ -20,6 +20,16 @@ use std::fmt;
 
 use smithay::utils::{Raw, Size};
 
+/// `OutputName::make` reported by every virtual output, on every backend.
+///
+/// The single source of truth for the marker a virtual output carries, so
+/// spotting one later (see `is_virtual_output`) does not depend on two
+/// backends agreeing on a literal by coincidence.
+pub const VIRTUAL_OUTPUT_MAKE: &str = "niri";
+
+/// `OutputName::model` reported by every virtual output, on every backend.
+pub const VIRTUAL_OUTPUT_MODEL: &str = "virtual";
+
 /// Why a virtual output could not be created or removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VirtualOutputError {
