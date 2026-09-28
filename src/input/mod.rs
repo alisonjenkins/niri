@@ -2530,6 +2530,7 @@ impl State {
             }
             Action::ToggleOverview => {
                 self.niri.layout.toggle_overview();
+                self.niri.rebuild_projections();
                 self.niri.queue_redraw_all();
             }
             Action::OpenOverview => {
@@ -2898,6 +2899,7 @@ impl State {
                     .unwrap_or(true)
             {
                 self.niri.layout.toggle_overview();
+                self.niri.rebuild_projections();
             }
             self.niri.pointer_inside_hot_corner = true;
         }
@@ -2989,6 +2991,7 @@ impl State {
                     .unwrap_or(true)
             {
                 self.niri.layout.toggle_overview();
+                self.niri.rebuild_projections();
             }
             self.niri.pointer_inside_hot_corner = true;
         }
