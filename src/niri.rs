@@ -184,6 +184,7 @@ use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
+use crate::ui::overview_column_label::OverviewColumnLabels;
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
 use crate::utils::scale::{closest_representable_scale, guess_monitor_scale};
@@ -454,6 +455,9 @@ pub struct Niri {
     /// overview isn't opening, closing or mid-gesture: projections only
     /// change shape as the overview zoom changes.
     projection_rebuild_overview_zoom: f64,
+
+    /// Source-name labels drawn above overview projection columns.
+    overview_column_labels: OverviewColumnLabels,
 }
 
 smithay::delegate_dispatch2!(State);
@@ -2812,6 +2816,7 @@ impl Niri {
 
             projection_state: ProjectionState::default(),
             projection_rebuild_overview_zoom: 1.,
+            overview_column_labels: OverviewColumnLabels::default(),
         };
 
         niri.reset_pointer_inactivity_timer();
@@ -3287,6 +3292,10 @@ impl Niri {
                 );
             }
             self.projection_state.projections = projections;
+
+            let projections = &self.projection_state.projections;
+            self.overview_column_labels
+                .retain_sources(|name| projections.iter().any(|p| p.source == name));
         }
 
         self.projection_rebuild_overview_zoom = self.layout.overview_zoom();
@@ -4915,6 +4924,15 @@ impl Niri {
             else {
                 continue;
             };
+            if let Some(label) = self.overview_column_labels.render(
+                ctx.renderer,
+                &projection.source,
+                viewer_scale,
+                projection.region,
+            ) {
+                push(label.into());
+            }
+
             let source_scale = source.current_scale().fractional_scale();
             let crop = projection.region.to_physical_precise_round(viewer_scale);
 
