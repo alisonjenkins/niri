@@ -18,6 +18,8 @@
 
 use std::fmt;
 
+use niri_config::OutputName;
+use smithay::output::Output;
 use smithay::utils::{Raw, Size};
 
 /// `OutputName::make` reported by every virtual output, on every backend.
@@ -105,9 +107,84 @@ pub fn physical_size_mm(width: i32, height: i32) -> Size<i32, Raw> {
     (mm_from_px(width), mm_from_px(height)).into()
 }
 
+/// Whether `output` is one of ours, created by [`Tty::create_virtual_output`]
+/// or [`Headless::create_virtual_output`], rather than a physical display.
+///
+/// Both backends stamp every virtual output with the same `OutputName` make
+/// and model, so recognising one later is just checking for that marker.
+///
+/// [`Tty::create_virtual_output`]: super::tty::Tty::create_virtual_output
+/// [`Headless::create_virtual_output`]: super::headless::Headless::create_virtual_output
+pub fn is_virtual_output(output: &Output) -> bool {
+    let Some(name) = output.user_data().get::<OutputName>() else {
+        return false;
+    };
+    name.make.as_deref() == Some(VIRTUAL_OUTPUT_MAKE)
+        && name.model.as_deref() == Some(VIRTUAL_OUTPUT_MODEL)
+}
+
 #[cfg(test)]
 mod tests {
+    use niri_config::OutputName;
+    use smithay::output::{Output, PhysicalProperties, Subpixel};
+
     use super::*;
+
+    fn output_with_name(name: Option<OutputName>) -> Output {
+        let output = Output::new(
+            "steam".to_owned(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "niri".to_owned(),
+                model: "virtual".to_owned(),
+                serial_number: "1".to_owned(),
+            },
+        );
+        if let Some(name) = name {
+            output.user_data().insert_if_missing(|| name);
+        }
+        output
+    }
+
+    #[test]
+    fn is_virtual_output_true_for_niri_virtual_marker() {
+        let output = output_with_name(Some(OutputName {
+            connector: "steam".to_owned(),
+            make: Some(VIRTUAL_OUTPUT_MAKE.to_owned()),
+            model: Some(VIRTUAL_OUTPUT_MODEL.to_owned()),
+            serial: Some("1".to_owned()),
+        }));
+        assert!(is_virtual_output(&output));
+    }
+
+    #[test]
+    fn is_virtual_output_false_when_make_differs() {
+        let output = output_with_name(Some(OutputName {
+            connector: "DP-1".to_owned(),
+            make: Some("Dell Inc.".to_owned()),
+            model: Some(VIRTUAL_OUTPUT_MODEL.to_owned()),
+            serial: Some("1".to_owned()),
+        }));
+        assert!(!is_virtual_output(&output));
+    }
+
+    #[test]
+    fn is_virtual_output_false_when_model_differs() {
+        let output = output_with_name(Some(OutputName {
+            connector: "DP-1".to_owned(),
+            make: Some(VIRTUAL_OUTPUT_MAKE.to_owned()),
+            model: Some("U2720Q".to_owned()),
+            serial: Some("1".to_owned()),
+        }));
+        assert!(!is_virtual_output(&output));
+    }
+
+    #[test]
+    fn is_virtual_output_false_without_output_name() {
+        let output = output_with_name(None);
+        assert!(!is_virtual_output(&output));
+    }
 
     #[test]
     fn messages_name_the_output_they_are_about() {
