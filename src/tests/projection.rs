@@ -437,3 +437,64 @@ fn overview_columns_zoom_one_places_regions_off_screen() {
     assert_eq!(result.regions.len(), 1);
     assert!(result.regions[0].loc.x >= viewer_size.w);
 }
+
+/// A raw `global_space.output_under` call skips projection resolution, so
+/// every caller other than `Niri::output_under` itself must go through it
+/// instead. This walks the source tree and fails if a new raw call sneaks
+/// in anywhere but the two allowed sites.
+#[test]
+fn global_space_output_under_is_used_only_in_niri_output_under_and_the_motion_clamp() {
+    fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // Test code is allowed to mention the symbol in strings and
+            // comments (as this guard test itself does); only production
+            // code is required to route through `Niri::output_under`.
+            if path.file_name().is_some_and(|name| name == "tests") {
+                continue;
+            }
+            if path.is_dir() {
+                collect_rs_files(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_rs_files(&src_dir, &mut files);
+    assert!(
+        !files.is_empty(),
+        "expected to find .rs files under {src_dir:?}"
+    );
+
+    let mut hits = Vec::new();
+    for path in files {
+        let contents = std::fs::read_to_string(&path).unwrap_or_default();
+        // Collapse whitespace so a method chain rustfmt wrapped across lines
+        // (`.global_space\n.output_under(..)`) still matches.
+        let stripped: String = contents.chars().filter(|c| !c.is_whitespace()).collect();
+        let count = stripped.matches("global_space.output_under").count();
+        if count > 0 {
+            let rel = path
+                .strip_prefix(&src_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            hits.push((rel, count));
+        }
+    }
+    hits.sort();
+
+    assert_eq!(
+        hits,
+        vec![("input/mod.rs".to_string(), 2), ("niri.rs".to_string(), 1)],
+        "global_space.output_under must be used only inside Niri::output_under (src/niri.rs) \
+         and the pointer-motion clamp (src/input/mod.rs); every other caller should go through \
+         Niri::output_under so pointer positions are resolved through projections"
+    );
+}
