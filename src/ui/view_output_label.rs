@@ -5,20 +5,18 @@ use std::time::Duration;
 
 use niri_config::Config;
 use ordered_float::NotNan;
-use pangocairo::cairo::{self, ImageSurface};
-use pangocairo::pango::FontDescription;
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::gles::GlesTexture;
 use smithay::output::Output;
-use smithay::reexports::gbm::Format as Fourcc;
-use smithay::utils::{Point, Transform};
+use smithay::utils::Point;
 use tracing::{debug, warn};
 
 use crate::animation::{Animation, Clock};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
-use crate::utils::{output_size, to_physical_precise_round};
+use crate::ui::text_texture::render_text_texture;
+use crate::utils::output_size;
 
 const PADDING: i32 = 8;
 const FONT: &str = "sans 14px";
@@ -147,7 +145,7 @@ impl ViewOutputLabel {
 
         let mut buffers = self.buffers.borrow_mut();
         let buffer = buffers.entry(scale_key).or_insert_with(move || {
-            match render(renderer.as_gles_renderer(), scale, &text) {
+            match render_text_texture(renderer.as_gles_renderer(), scale, &text, FONT, PADDING) {
                 Ok(buffer) => Some(buffer),
                 Err(error) => {
                     warn!(text_len, scale, %error, "failed to render view-output label");
@@ -180,59 +178,6 @@ impl ViewOutputLabel {
         );
         Some(PrimaryGpuTextureRenderElement(elem))
     }
-}
-
-fn render(
-    renderer: &mut GlesRenderer,
-    scale: f64,
-    text: &str,
-) -> anyhow::Result<TextureBuffer<GlesTexture>> {
-    let _span = tracy_client::span!("view_output_label::render");
-
-    let padding: i32 = to_physical_precise_round(scale, PADDING);
-
-    let mut font = FontDescription::from_string(FONT);
-    font.set_absolute_size(to_physical_precise_round(scale, font.size()));
-
-    let surface = ImageSurface::create(cairo::Format::ARgb32, 0, 0)?;
-    let cr = cairo::Context::new(&surface)?;
-    let layout = pangocairo::functions::create_layout(&cr);
-    layout.context().set_round_glyph_positions(false);
-    layout.set_font_description(Some(&font));
-    layout.set_text(text);
-
-    let (mut width, mut height) = layout.pixel_size();
-    width += padding * 2;
-    height += padding * 2;
-
-    let surface = ImageSurface::create(cairo::Format::ARgb32, width, height)?;
-    let cr = cairo::Context::new(&surface)?;
-    cr.set_source_rgb(0.1, 0.1, 0.1);
-    cr.paint()?;
-
-    cr.move_to(padding.into(), padding.into());
-    let layout = pangocairo::functions::create_layout(&cr);
-    layout.context().set_round_glyph_positions(false);
-    layout.set_font_description(Some(&font));
-    layout.set_text(text);
-
-    cr.set_source_rgb(1., 1., 1.);
-    pangocairo::functions::show_layout(&cr, &layout);
-    drop(cr);
-
-    let data = surface.take_data()?;
-    let buffer = TextureBuffer::from_memory(
-        renderer,
-        &data,
-        Fourcc::Argb8888,
-        (width, height),
-        false,
-        scale,
-        Transform::Normal,
-        Vec::new(),
-    )?;
-
-    Ok(buffer)
 }
 
 #[cfg(test)]
