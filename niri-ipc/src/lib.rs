@@ -122,6 +122,12 @@ pub enum Request {
         /// Name of the output to remove (e.g. "HEADLESS-1").
         name: String,
     },
+    /// Show a virtual output on the focused physical monitor, or stop showing it when no name is
+    /// given.
+    ViewOutput {
+        /// Name of the virtual output to show.
+        name: Option<String>,
+    },
     /// Start continuously receiving events from the compositor.
     ///
     /// The compositor should reply with `Reply::Ok(Response::Handled)`, then continuously send
@@ -191,6 +197,8 @@ pub enum Response {
     Casts(Vec<Cast>),
     /// A virtual output was created successfully.
     VirtualOutputCreated(String),
+    /// The result of a view-output request.
+    ViewOutput(ViewOutputState),
 }
 
 /// Overview information.
@@ -207,6 +215,28 @@ pub struct Overview {
 pub struct PickedColor {
     /// Color values as red, green, blue, each ranging from 0.0 to 1.0.
     pub rgb: [f64; 3],
+}
+
+/// State of a view-output request's target.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum ViewOutputState {
+    /// The virtual output is now being viewed.
+    Viewing {
+        /// Name of the physical output showing the virtual output.
+        viewer: String,
+        /// Name of the virtual output being viewed.
+        source: String,
+    },
+    /// Viewing was stopped.
+    Stopped {
+        /// Name of the physical output that was showing the virtual output.
+        viewer: String,
+        /// Name of the virtual output that was being viewed.
+        source: String,
+    },
+    /// The focused physical output was not viewing anything.
+    NotViewing,
 }
 
 /// Actions that niri can perform.
@@ -990,6 +1020,13 @@ pub enum Action {
         /// If unset, reloads the current config file.
         #[cfg_attr(feature = "clap", arg(long))]
         path: Option<String>,
+    },
+    /// Show a virtual output on the focused physical monitor, or stop showing it when no name is
+    /// given.
+    ViewOutput {
+        /// Name of the virtual output to show.
+        #[cfg_attr(feature = "clap", arg())]
+        name: Option<String>,
     },
 }
 

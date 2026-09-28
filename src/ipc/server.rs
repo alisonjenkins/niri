@@ -512,6 +512,9 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             result.map_err(|err| err.to_string())?;
             Response::Handled
         }
+        Request::ViewOutput { .. } => {
+            return Err("view-output is not implemented yet".to_string());
+        }
     };
 
     Ok(response)

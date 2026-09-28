@@ -2361,6 +2361,9 @@ impl State {
                     watcher.load_config(path);
                 }
             }
+            Action::ViewOutput(_name) => {
+                warn!("view-output is not implemented yet");
+            }
             Action::MruConfirm => {
                 self.confirm_mru();
             }
