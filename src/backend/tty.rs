@@ -210,6 +210,18 @@ fn rebuild_virtual_output(output: &Output) -> Output {
     rebuilt
 }
 
+/// Make `mode` the only mode `output` advertises.
+///
+/// A virtual output can be any size, so modes it no longer has would otherwise pile up
+/// on every resize and be offered to clients as if it still supported them.
+fn set_only_mode(output: &Output, mode: Mode) {
+    output.change_current_state(Some(mode), None, None, None);
+    output.set_preferred(mode);
+    for stale in output.modes().into_iter().filter(|m| *m != mode) {
+        output.delete_mode(stale);
+    }
+}
+
 /// Refresh interval matching the rate a virtual output advertises.
 fn virtual_refresh_interval(refresh_rate: u32) -> Duration {
     Duration::from_nanos(1_000_000_000 / u64::from(refresh_rate))
@@ -2721,9 +2733,7 @@ impl Tty {
                 size: (i32::from(wanted.width), i32::from(wanted.height)).into(),
                 refresh: i32::try_from(refresh_rate * 1000).unwrap_or(60_000),
             };
-            virt.output
-                .change_current_state(Some(mode), None, None, None);
-            virt.output.set_preferred(mode);
+            set_only_mode(&virt.output, mode);
 
             // Only outputs in the layout have frame clocks and windows to lay
             // out again; a disabled one picks the mode up when it is enabled.
@@ -4065,7 +4075,7 @@ mod tests {
 
     use crate::backend::tty::{
         calculate_drm_mode_from_modeline, calculate_mode_cvt, configured_refresh_rate,
-        declared_virtual_mode, rebuild_virtual_output, virtual_output_transition,
+        declared_virtual_mode, rebuild_virtual_output, set_only_mode, virtual_output_transition,
         with_virtual_outputs, ConfiguredMode, IpcOutputMap, OutputId, VirtualOutput,
     };
 
@@ -4195,6 +4205,21 @@ mod tests {
         virt.output
             .change_current_state(Some(resized), None, None, None);
         assert_ne!(live.current_mode(), Some(resized));
+    }
+
+    #[test]
+    fn resizing_a_virtual_output_drops_its_old_mode() {
+        let virt = virtual_output(true);
+        let resized = Mode {
+            size: (1728, 1080).into(),
+            refresh: 60_000,
+        };
+
+        set_only_mode(&virt.output, resized);
+
+        assert_eq!(virt.output.modes(), vec![resized]);
+        assert_eq!(virt.output.current_mode(), Some(resized));
+        assert_eq!(virt.output.preferred_mode(), Some(resized));
     }
 
     #[test]
