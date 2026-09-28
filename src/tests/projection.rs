@@ -365,6 +365,64 @@ mod fixture_tests {
         assert_eq!(f.niri().projection_state.viewing, None);
         assert!(f.niri().projection_state.projections.is_empty());
     }
+
+    #[test]
+    fn output_under_resolves_into_the_source_while_viewing() {
+        let mut f = Fixture::new();
+        f.add_output(1, (1920, 1080));
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+
+        let viewer = f.niri_output(1);
+        let viewer_name = viewer.name();
+        f.niri().projection_state.viewing = Some(Viewing {
+            viewer: viewer_name.clone(),
+            source: "steam".to_string(),
+        });
+        f.niri().rebuild_projections();
+
+        let steam = f
+            .niri()
+            .layout
+            .outputs()
+            .find(|o| o.name() == "steam")
+            .unwrap()
+            .clone();
+
+        // Viewer centre, per the letterbox computed in the test above.
+        let (output, local) = f.niri().output_under(Point::from((960., 540.))).unwrap();
+        assert_eq!(output, &steam);
+        assert!((local.x - 640.).abs() < 1e-6);
+        assert!((local.y - 400.).abs() < 1e-6);
+    }
+
+    #[test]
+    fn output_under_returns_none_in_the_letterbox_bar_while_viewing() {
+        let mut f = Fixture::new();
+        f.add_output(1, (1920, 1080));
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+
+        let viewer_name = f.niri_output(1).name();
+        f.niri().projection_state.viewing = Some(Viewing {
+            viewer: viewer_name,
+            source: "steam".to_string(),
+        });
+        f.niri().rebuild_projections();
+
+        // Region is x in [96, 1824], so x=10 is in the left letterbox bar.
+        assert_eq!(f.niri().output_under(Point::from((10., 540.))), None);
+    }
 }
 
 #[test]

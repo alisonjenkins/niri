@@ -3332,15 +3332,53 @@ impl Niri {
         Vec::new()
     }
 
+    /// Resolves a global-space position to an output and a position local to
+    /// it, projection-aware.
+    ///
+    /// If the position lands on a viewer inside a projection's `region`, this
+    /// returns the projection's source output and the position mapped into
+    /// it instead. If it lands inside a `View` projection's viewer but
+    /// outside `region` (the letterbox bars), this returns `None`: nothing
+    /// is there to hit, since a `View` projection replaces the viewer's own
+    /// content entirely. Any other position passes through unchanged.
     pub fn output_under(&self, pos: Point<f64, Logical>) -> Option<(&Output, Point<f64, Logical>)> {
         let output = self.global_space.output_under(pos).next()?;
-        let pos_within_output = pos
-            - self
-                .global_space
-                .output_geometry(output)
-                .unwrap()
-                .loc
-                .to_f64();
+        let Some(output_geo) = self.global_space.output_geometry(output) else {
+            debug!(output = %output.name(), "output has no geometry in global_space");
+            return None;
+        };
+        let pos_within_output = pos - output_geo.loc.to_f64();
+
+        let viewer_name = output.name();
+        let mut inside_view_projection = false;
+        for projection in &self.projection_state.projections {
+            if projection.viewer != viewer_name {
+                continue;
+            }
+
+            if let Some(source_pos) = projection.to_source(pos_within_output) {
+                let Some(source) = self
+                    .layout
+                    .outputs()
+                    .find(|o| o.name() == projection.source)
+                else {
+                    debug!(
+                        source = %projection.source,
+                        "projection source is not a live output",
+                    );
+                    continue;
+                };
+                return Some((source, source_pos));
+            }
+
+            if projection.kind == ProjectionKind::View {
+                inside_view_projection = true;
+            }
+        }
+
+        if inside_view_projection {
+            return None;
+        }
 
         Some((output, pos_within_output))
     }
@@ -3750,7 +3788,7 @@ impl Niri {
 
     pub fn output_under_cursor(&self) -> Option<Output> {
         let pos = self.seat.get_pointer().unwrap().current_location();
-        self.global_space.output_under(pos).next().cloned()
+        self.output_under(pos).map(|(output, _)| output.clone())
     }
 
     pub fn output_left_of(&self, current: &Output) -> Option<Output> {
