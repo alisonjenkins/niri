@@ -517,3 +517,458 @@ fn global_space_output_under_is_used_only_in_niri_output_under_and_the_motion_cl
          Niri::output_under so pointer positions are resolved through projections"
     );
 }
+
+mod overview_tests {
+    use smithay::desktop::Window;
+    use smithay::output::Output;
+    use smithay::reexports::wayland_server::Resource as _;
+    use smithay::utils::{Logical, Point, Rectangle};
+    use smithay::wayland::seat::WaylandFocus as _;
+    use wayland_client::protocol::wl_surface::WlSurface;
+    use wayland_client::Proxy as _;
+
+    use crate::layout::HitType;
+    use crate::niri::Niri;
+    use crate::projection::{Projection, ProjectionKind};
+    use crate::tests::client::ClientId;
+    use crate::tests::fixture::Fixture;
+
+    /// A wide physical viewer, like the 5120x1440 desk monitor, and the given
+    /// virtual outputs.
+    fn set_up(viewer_size: (u16, u16), sources: &[(&str, u16, u16)]) -> Fixture {
+        let mut f = Fixture::new();
+        f.add_output(1, viewer_size);
+        for (name, w, h) in sources {
+            let state = f.niri_state();
+            state
+                .backend
+                .headless()
+                .create_virtual_output(&mut state.niri, *w, *h, 60, Some(name.to_string()))
+                .unwrap();
+        }
+        f
+    }
+
+    fn output_named(f: &mut Fixture, name: &str) -> Output {
+        f.niri()
+            .layout
+            .outputs()
+            .find(|o| o.name() == name)
+            .unwrap()
+            .clone()
+    }
+
+    fn map_window_on(f: &mut Fixture, id: ClientId, output: &Output, w: u16, h: u16) -> Window {
+        f.niri().layout.focus_output(output);
+
+        let window = f.client(id).create_window();
+        let surface = window.surface.clone();
+        window.commit();
+        f.roundtrip(id);
+
+        let window = f.client(id).window(&surface);
+        window.attach_new_buffer();
+        window.set_size(w, h);
+        window.ack_last_and_commit();
+        f.double_roundtrip(id);
+
+        window_for(f, &surface)
+    }
+
+    fn window_for(f: &mut Fixture, surface: &WlSurface) -> Window {
+        let niri = f.niri();
+        niri.layout
+            .windows()
+            .map(|(_, mapped)| mapped.window.clone())
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .is_some_and(|s| s.id().protocol_id() == surface.id().protocol_id())
+            })
+            .unwrap()
+    }
+
+    fn center(rect: Rectangle<f64, Logical>) -> Point<f64, Logical> {
+        rect.loc + rect.size.downscale(2.).to_point()
+    }
+
+    fn open_overview(f: &mut Fixture) {
+        f.niri().layout.toggle_overview();
+        f.niri_complete_animations();
+        assert!(f.niri().layout.is_overview_open());
+    }
+
+    fn projection_for(niri: &Niri, source: &str) -> Projection {
+        niri.projection_state
+            .projections
+            .iter()
+            .find(|p| p.source == source && p.kind == ProjectionKind::Overview)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no overview projection for {source}: {:?}",
+                    niri.projection_state.projections
+                )
+            })
+            .clone()
+    }
+
+    fn viewer_origin(niri: &Niri, viewer: &Output) -> Point<f64, Logical> {
+        niri.global_space
+            .output_geometry(viewer)
+            .unwrap()
+            .loc
+            .to_f64()
+    }
+
+    /// Where the centre of `window` is drawn on `output`, in output-local
+    /// coordinates, following the overview zoom.
+    fn window_center_on(niri: &Niri, output: &Output, window: &Window) -> Point<f64, Logical> {
+        let mon = niri.layout.monitor_for_output(output).unwrap();
+        let zoom = mon.overview_zoom();
+        let (ws, ws_geo) = mon
+            .workspaces_with_render_geo_cull(false)
+            .find(|(ws, _)| ws.has_window(window))
+            .unwrap();
+        let (tile, tile_pos, _) = ws
+            .tiles_with_render_positions()
+            .find(|(tile, _, _)| tile.window().window == *window)
+            .unwrap();
+        let center = tile_pos + tile.window_loc() + tile.window_size().to_point().downscale(2.);
+        ws_geo.loc + center.upscale(zoom)
+    }
+
+    /// The global position on the viewer where `window` on `source` is shown.
+    fn projected_window_center(
+        f: &mut Fixture,
+        source: &str,
+        window: &Window,
+    ) -> Point<f64, Logical> {
+        let viewer = f.niri_output(1);
+        let source_output = output_named(f, source);
+        let niri = f.niri();
+        let projection = projection_for(niri, source);
+        let center = window_center_on(niri, &source_output, window);
+        projection.to_viewer(center) + viewer_origin(niri, &viewer)
+    }
+
+    fn workspace_windows(niri: &Niri, output: &Output) -> Vec<Vec<Window>> {
+        niri.layout
+            .workspaces()
+            .filter(|(mon, _, _)| mon.is_some_and(|mon| mon.output() == output))
+            .map(|(_, _, ws)| ws.windows().map(|m| m.window.clone()).collect())
+            .collect()
+    }
+
+    fn is_on(niri: &Niri, output: &Output, window: &Window) -> bool {
+        niri.layout
+            .windows_for_output(output)
+            .any(|m| m.window == *window)
+    }
+
+    /// Drives an interactive move the way the pointer grab does: begin at
+    /// `from`, move to `to`, release. Both are global positions resolved
+    /// through `Niri::output_under`.
+    fn drag(f: &mut Fixture, window: &Window, from: Point<f64, Logical>, to: Point<f64, Logical>) {
+        let niri = f.niri();
+        let (output, pos) = niri.output_under(from).unwrap();
+        let output = output.clone();
+        assert!(niri
+            .layout
+            .interactive_move_begin(window.clone(), &output, pos));
+
+        let (output, pos) = niri.output_under(to).unwrap();
+        let output = output.clone();
+        let delta = to - from;
+        assert!(niri
+            .layout
+            .interactive_move_update(window, delta, output.clone(), pos));
+        assert!(niri
+            .layout
+            .interactive_move_update(window, Point::from((0., 0.)), output, pos));
+        niri.layout.interactive_move_end(window);
+        f.niri_complete_animations();
+    }
+
+    #[test]
+    fn overview_hit_test_reaches_a_window_on_the_source() {
+        let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let window = map_window_on(&mut f, id, &steam, 400, 300);
+        open_overview(&mut f);
+
+        let projection = projection_for(f.niri(), "steam");
+        assert!((projection.scale() - 1.).abs() < 1e-9, "{projection:?}");
+
+        let p = projected_window_center(&mut f, "steam", &window);
+        let (output, _) = f.niri().output_under(p).unwrap();
+        assert_eq!(output, &steam);
+
+        let contents = f.niri().contents_under(p);
+        let (hit_window, hit) = contents.window.unwrap();
+        assert_eq!(hit_window, window);
+        // The overview never delivers pointer input into windows (it only
+        // activates them), for physical monitors too.
+        assert!(matches!(hit, HitType::Activate { .. }), "{hit:?}");
+    }
+
+    #[test]
+    fn overview_hit_test_reaches_a_window_in_a_shrunk_column() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let window = map_window_on(&mut f, id, &steam, 400, 300);
+        open_overview(&mut f);
+
+        let projection = projection_for(f.niri(), "steam");
+        assert!(projection.scale() < 1., "{projection:?}");
+
+        let p = projected_window_center(&mut f, "steam", &window);
+        let contents = f.niri().contents_under(p);
+        assert_eq!(contents.output.as_ref(), Some(&steam));
+        assert_eq!(contents.window.map(|(w, _)| w), Some(window));
+    }
+
+    #[test]
+    fn drag_from_source_column_to_viewer_workspace() {
+        let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let viewer = f.niri_output(1);
+        let window = map_window_on(&mut f, id, &steam, 400, 300);
+        open_overview(&mut f);
+
+        let from = projected_window_center(&mut f, "steam", &window);
+        let niri = f.niri();
+        let mon = niri.layout.monitor_for_output(&viewer).unwrap();
+        let (_, ws_geo) = mon.workspaces_with_render_geo().next().unwrap();
+        let to = center(ws_geo) + viewer_origin(niri, &viewer);
+
+        drag(&mut f, &window, from, to);
+
+        assert!(is_on(f.niri(), &viewer, &window));
+        assert!(!is_on(f.niri(), &steam, &window));
+    }
+
+    #[test]
+    fn drag_from_viewer_workspace_into_source_column() {
+        let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let viewer = f.niri_output(1);
+        let window = map_window_on(&mut f, id, &viewer, 400, 300);
+        open_overview(&mut f);
+
+        let niri = f.niri();
+        let from = window_center_on(niri, &viewer, &window) + viewer_origin(niri, &viewer);
+        let projection = projection_for(niri, "steam");
+        let mon = niri.layout.monitor_for_output(&steam).unwrap();
+        let (_, ws_geo) = mon.workspaces_with_render_geo().next().unwrap();
+        let to = projection.to_viewer(center(ws_geo)) + viewer_origin(niri, &viewer);
+
+        drag(&mut f, &window, from, to);
+
+        assert!(is_on(f.niri(), &steam, &window));
+        assert!(!is_on(f.niri(), &viewer, &window));
+    }
+
+    #[test]
+    fn drop_in_gap_between_source_workspaces_creates_a_workspace() {
+        let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let viewer = f.niri_output(1);
+
+        // steam: ws0 [a], ws1 [b], ws2 [] (the trailing empty one).
+        let a = map_window_on(&mut f, id, &steam, 400, 300);
+        let b = map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().layout.move_to_workspace_down(false);
+        f.double_roundtrip(id);
+        let dragged = map_window_on(&mut f, id, &viewer, 400, 300);
+        open_overview(&mut f);
+        assert_eq!(
+            workspace_windows(f.niri(), &steam),
+            vec![vec![a.clone()], vec![b.clone()], vec![]]
+        );
+
+        let niri = f.niri();
+        let from = window_center_on(niri, &viewer, &dragged) + viewer_origin(niri, &viewer);
+        let projection = projection_for(niri, "steam");
+        let mon = niri.layout.monitor_for_output(&steam).unwrap();
+        let mut geos = mon.workspaces_render_geo();
+        let ws0 = geos.next().unwrap();
+        let ws1 = geos.next().unwrap();
+        let gap_center = Point::from((center(ws0).x, (ws0.loc.y + ws0.size.h + ws1.loc.y) / 2.));
+        let to = projection.to_viewer(gap_center) + viewer_origin(niri, &viewer);
+
+        drag(&mut f, &dragged, from, to);
+
+        assert_eq!(
+            workspace_windows(f.niri(), &steam),
+            vec![vec![a], vec![dragged], vec![b], vec![]]
+        );
+    }
+
+    #[test]
+    fn source_column_follows_source_removal_and_recreation_without_closing_overview() {
+        let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
+        open_overview(&mut f);
+        projection_for(f.niri(), "steam");
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .remove_virtual_output(&mut state.niri, "steam")
+            .unwrap();
+        assert!(f.niri().layout.is_overview_open());
+        assert!(f.niri().projection_state.projections.is_empty());
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+        assert!(f.niri().layout.is_overview_open());
+        projection_for(f.niri(), "steam");
+    }
+
+    #[test]
+    fn reorder_windows_inside_the_source_column() {
+        let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let a = map_window_on(&mut f, id, &steam, 300, 300);
+        let b = map_window_on(&mut f, id, &steam, 300, 300);
+        let viewer = f.niri_output(1);
+        open_overview(&mut f);
+        assert_eq!(
+            workspace_windows(f.niri(), &steam)[0],
+            vec![a.clone(), b.clone()]
+        );
+
+        let from = projected_window_center(&mut f, "steam", &a);
+        let niri = f.niri();
+        let projection = projection_for(niri, "steam");
+        let mon = niri.layout.monitor_for_output(&steam).unwrap();
+        let zoom = mon.overview_zoom();
+        let (ws, ws_geo) = mon.workspaces_with_render_geo().next().unwrap();
+        let (tile, tile_pos, _) = ws
+            .tiles_with_render_positions()
+            .find(|(tile, _, _)| tile.window().window == b)
+            .unwrap();
+        // Just past b's right edge, at b's vertical centre.
+        let past_b = tile_pos + Point::from((tile.tile_size().w + 10., tile.tile_size().h / 2.));
+        let past_b = ws_geo.loc + past_b.upscale(zoom);
+        let to = projection.to_viewer(past_b) + viewer_origin(niri, &viewer);
+
+        drag(&mut f, &a, from, to);
+
+        assert_eq!(workspace_windows(f.niri(), &steam)[0], vec![b, a]);
+    }
+
+    #[test]
+    fn scrolling_a_source_column_switches_its_workspaces_only() {
+        let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let viewer = f.niri_output(1);
+        map_window_on(&mut f, id, &steam, 300, 300);
+        map_window_on(&mut f, id, &steam, 300, 300);
+        f.niri().layout.move_to_workspace_down(false);
+        f.double_roundtrip(id);
+        open_overview(&mut f);
+
+        let niri = f.niri();
+        let steam_mon = niri.layout.monitor_for_output(&steam).unwrap();
+        assert_eq!(steam_mon.active_workspace_idx(), 0);
+        let viewer_idx = niri
+            .layout
+            .monitor_for_output(&viewer)
+            .unwrap()
+            .active_workspace_idx();
+
+        // A point inside the lower (second) steam workspace in the column.
+        let projection = projection_for(niri, "steam");
+        let ws1 = steam_mon.workspaces_render_geo().nth(1).unwrap();
+        let lower = Point::from((center(ws1).x, ws1.loc.y + 10.));
+        let p = projection.to_viewer(lower) + viewer_origin(niri, &viewer);
+
+        let (ws_output, ws) = niri.workspace_under(false, p).unwrap();
+        assert_eq!(ws_output, steam);
+        let ws_id = ws.id();
+        let steam_ws1 = steam_mon
+            .workspaces_with_render_geo()
+            .nth(1)
+            .unwrap()
+            .0
+            .id();
+        assert_eq!(ws_id, steam_ws1);
+
+        // The overview scroll handler begins the gesture on the output under
+        // the cursor, then feeds it scroll deltas.
+        let (output, _) = niri.output_under(p).unwrap();
+        let output = output.clone();
+        assert_eq!(output, steam);
+        niri.layout.workspace_switch_gesture_begin(&output, true);
+        niri.layout.workspace_switch_gesture_update(
+            1000.,
+            std::time::Duration::from_millis(10),
+            true,
+        );
+        niri.layout.workspace_switch_gesture_end(Some(true));
+        f.niri_complete_animations();
+
+        let niri = f.niri();
+        assert_ne!(
+            niri.layout
+                .monitor_for_output(&steam)
+                .unwrap()
+                .active_workspace_idx(),
+            0
+        );
+        assert_eq!(
+            niri.layout
+                .monitor_for_output(&viewer)
+                .unwrap()
+                .active_workspace_idx(),
+            viewer_idx
+        );
+    }
+
+    #[test]
+    fn every_enabled_source_gets_its_own_column() {
+        let mut f = set_up((5120, 1440), &[("steam", 1280, 800), ("aux", 1920, 1080)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let aux = output_named(&mut f, "aux");
+        let on_steam = map_window_on(&mut f, id, &steam, 300, 300);
+        let on_aux = map_window_on(&mut f, id, &aux, 300, 300);
+        open_overview(&mut f);
+
+        let niri = f.niri();
+        let steam_region = projection_for(niri, "steam").region;
+        let aux_region = projection_for(niri, "aux").region;
+        assert!(
+            steam_region.intersection(aux_region).is_none(),
+            "{steam_region:?} overlaps {aux_region:?}"
+        );
+
+        for (name, output, window) in [("steam", &steam, &on_steam), ("aux", &aux, &on_aux)] {
+            let region = projection_for(f.niri(), name).region;
+            let viewer = f.niri_output(1);
+            let centre = center(region) + viewer_origin(f.niri(), &viewer);
+            let (hit, _) = f.niri().output_under(centre).unwrap();
+            assert_eq!(hit, output, "column centre of {name}");
+
+            let p = projected_window_center(&mut f, name, window);
+            let contents = f.niri().contents_under(p);
+            assert_eq!(
+                contents.window.map(|(w, _)| w).as_ref(),
+                Some(window),
+                "{name}"
+            );
+        }
+    }
+}

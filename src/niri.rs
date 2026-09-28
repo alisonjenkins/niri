@@ -148,13 +148,16 @@ use crate::input::{
 use crate::ipc::server::IpcServer;
 use crate::layer::mapped::LayerSurfaceRenderElement;
 use crate::layer::MappedLayer;
+use crate::layout::monitor::Monitor;
 use crate::layout::tile::TileRenderElement;
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement,
 };
 use crate::niri_render_elements;
-use crate::projection::{letterbox, Projection, ProjectionKind, ProjectionState, Viewing};
+use crate::projection::{
+    letterbox, overview_columns, Projection, ProjectionKind, ProjectionState, Viewing,
+};
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
 use crate::protocols::gamma_control::GammaControlManagerState;
@@ -3256,11 +3259,23 @@ impl Niri {
         }
 
         if projections != self.projection_state.projections {
-            debug!(
-                count = projections.len(),
-                kinds = ?projections.iter().map(|p| p.kind).collect::<Vec<_>>(),
-                "projection set changed"
-            );
+            // Geometry changes every frame while the overview animates; only
+            // log when which projections exist changes.
+            let key = |p: &Projection| (p.viewer.clone(), p.source.clone(), p.kind);
+            if !projections
+                .iter()
+                .map(key)
+                .eq(self.projection_state.projections.iter().map(key))
+            {
+                debug!(
+                    count = projections.len(),
+                    projections = ?projections
+                        .iter()
+                        .map(|p| (&p.viewer, &p.source, p.kind, p.source_rect.size, p.region))
+                        .collect::<Vec<_>>(),
+                    "projection set changed"
+                );
+            }
             self.projection_state.projections = projections;
         }
 
@@ -3323,13 +3338,68 @@ impl Niri {
         }
     }
 
-    /// Overview-mode projections, one per (viewer, enabled source) pair.
+    /// Overview-mode projections, one per (viewer, enabled source) pair,
+    /// while the overview is open or animating.
     ///
-    /// Always empty for now: overview columns are built in a later phase.
-    /// Kept as its own seam so `rebuild_projections` doesn't change shape
-    /// when they arrive.
+    /// Each source shows its own overview workspace strip (the x-extent of
+    /// its workspaces over its full height) in a column right of the
+    /// viewer's strip, laid out by [`overview_columns`].
     fn overview_projections(&self) -> Vec<Projection> {
-        Vec::new()
+        if !self.layout.is_overview_open() && self.layout.overview_zoom() >= 1. {
+            return Vec::new();
+        }
+
+        let mut sources: Vec<(String, Rectangle<f64, Logical>)> = self
+            .layout
+            .monitors()
+            .filter(|mon| is_virtual_output(mon.output()))
+            .filter_map(|mon| {
+                let strip = workspace_strip(mon)?;
+                Some((mon.output().name(), strip))
+            })
+            .collect();
+        if sources.is_empty() {
+            return Vec::new();
+        }
+        sources.sort_by(|a, b| a.0.cmp(&b.0));
+        let source_sizes: Vec<_> = sources.iter().map(|(_, rect)| rect.size).collect();
+
+        let mut projections = Vec::new();
+        for viewer in self
+            .layout
+            .monitors()
+            .filter(|mon| !is_virtual_output(mon.output()))
+        {
+            let viewer_name = viewer.output().name();
+            let Some(viewer_strip) = workspace_strip(viewer) else {
+                warn!(viewer = %viewer_name, "viewer has no overview workspace strip");
+                continue;
+            };
+            let viewer_size = output_size(viewer.output());
+            let regions = overview_columns(viewer_strip, viewer_size, &source_sizes);
+
+            for ((source_name, source_rect), region) in sources.iter().zip(regions) {
+                match Projection::new(
+                    viewer_name.clone(),
+                    source_name.clone(),
+                    *source_rect,
+                    region,
+                    ProjectionKind::Overview,
+                ) {
+                    Ok(projection) => projections.push(projection),
+                    Err(error) => warn!(
+                        viewer = %viewer_name,
+                        source = %source_name,
+                        ?source_rect,
+                        ?region,
+                        ?viewer_strip,
+                        %error,
+                        "skipping overview projection"
+                    ),
+                }
+            }
+        }
+        projections
     }
 
     /// Resolves a global-space position to an output and a position local to
@@ -7307,6 +7377,23 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+/// The area a monitor's overview workspaces span horizontally, over the
+/// monitor's full height, in its own logical coordinates.
+fn workspace_strip(mon: &Monitor<Mapped>) -> Option<Rectangle<f64, Logical>> {
+    let (left, right) = mon.workspaces_render_geo().fold(None, |extent, geo| {
+        let (l, r) = (geo.loc.x, geo.loc.x + geo.size.w);
+        Some(match extent {
+            None => (l, r),
+            Some((left, right)) => (f64::min(left, l), f64::max(right, r)),
+        })
+    })?;
+    let height = output_size(mon.output()).h;
+    Some(Rectangle::new(
+        Point::from((left, 0.)),
+        Size::from((right - left, height)),
+    ))
 }
 
 fn scale_relocate_crop<E: Element>(
