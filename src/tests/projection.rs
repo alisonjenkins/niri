@@ -216,61 +216,93 @@ fn letterbox_tall_source_into_wide_viewer() {
 }
 
 #[test]
-fn overview_columns_zero_sources_offset_zero_when_strip_centered() {
-    let viewer_size = size(2000., 1000.);
-    // Strip width 800, already at its centred position, so the layout should
-    // find an offset of 0.
+fn overview_columns_zero_sources_is_empty() {
     let strip = rect(600., 0., 800., 1000.);
 
-    let result = overview_columns(strip, viewer_size, &[]);
-
-    assert!(result.regions.is_empty());
-    assert!(result.strip_offset_x.abs() < 1e-9);
+    assert!(overview_columns(strip, size(2000., 1000.), &[]).is_empty());
 }
 
 #[test]
-fn overview_columns_one_source_fits() {
+fn overview_columns_one_source_starts_one_gap_right_of_the_strip() {
     let viewer_size = size(3000., 1000.);
-    let strip = rect(0., 0., 1000., 1000.);
-    let sources = [size(800., 600.)];
+    let strip = rect(1000., 0., 1000., 1000.);
 
-    let result = overview_columns(strip, viewer_size, &sources);
+    let regions = overview_columns(strip, viewer_size, &[size(800., 600.)]);
 
-    assert_eq!(result.regions.len(), 1);
-    let region = result.regions[0];
-
-    // Row = strip(1000) + gap(50) + region(800) = 1850, centred in 3000.
-    assert!((result.strip_offset_x - 575.).abs() < 1e-9);
-    assert!((region.size.w - 800.).abs() < 1e-9);
-    assert!((region.size.h - 600.).abs() < 1e-9);
-
-    let strip_right_edge = strip.loc.x + result.strip_offset_x + strip.size.w;
-    assert!((region.loc.x - (strip_right_edge + 50.)).abs() < 1e-9);
-    assert!((region.loc.y - 200.).abs() < 1e-9);
+    // gap = 0.05 * 1000. The strip is not moved; the region sits at scale 1,
+    // centred vertically.
+    assert_eq!(regions, vec![rect(2050., 200., 800., 600.)]);
 }
 
 #[test]
-fn overview_columns_three_sources_overflow_shrinks_only_sources() {
+fn overview_columns_three_sources_that_fit_keep_scale_one() {
+    let viewer_size = size(5120., 1440.);
+    let strip = rect(2000., 0., 800., 1440.);
+    let sources = [size(640., 400.), size(960., 540.), size(200., 100.)];
+
+    let regions = overview_columns(strip, viewer_size, &sources);
+
+    // gap = 72. Room = 5120 - 2800 - 3 * 72 - 72 = 2032 >= 1800.
+    assert_eq!(
+        regions,
+        vec![
+            rect(2872., 520., 640., 400.),
+            rect(3584., 450., 960., 540.),
+            rect(4616., 670., 200., 100.),
+        ]
+    );
+}
+
+#[test]
+fn overview_columns_overflow_shrinks_only_sources_to_fit() {
     let viewer_size = size(2000., 1000.);
-    let strip = rect(0., 0., 500., 1000.);
+    let strip = rect(500., 0., 500., 1000.);
     let sources = [size(600., 600.), size(600., 600.), size(600., 600.)];
 
-    let result = overview_columns(strip, viewer_size, &sources);
+    let regions = overview_columns(strip, viewer_size, &sources);
 
-    assert_eq!(result.regions.len(), 3);
+    // gap = 50. Room = 2000 - 1000 (strip right) - 3 * 50 - 50 (margin) = 800,
+    // so each 600-wide source shrinks to 800 / 3.
+    assert_eq!(regions.len(), 3);
+    let w = 800. / 3.;
+    let mut x = 1050.;
+    for r in &regions {
+        assert!((r.loc.x - x).abs() < 1e-9, "{regions:?}");
+        assert!((r.size.w - w).abs() < 1e-9, "{regions:?}");
+        assert!((r.size.h - w).abs() < 1e-9, "{regions:?}");
+        assert!((r.loc.y - (1000. - w) / 2.).abs() < 1e-9, "{regions:?}");
+        x += w + 50.;
+    }
+    let last = regions[2];
+    assert!(
+        (last.loc.x + last.size.w - 1950.).abs() < 1e-9,
+        "{regions:?}"
+    );
+}
 
-    // Unshrunk row would be 500 + 3*50 + 1800 = 2450 > 0.95 * 2000 = 1900, so
-    // sources shrink to make the row exactly 1900 wide; the strip itself
-    // keeps its own width.
-    let row_width = (result.regions[2].loc.x + result.regions[2].size.w)
-        - (strip.loc.x + result.strip_offset_x);
-    assert!((row_width - 1900.).abs() < 1e-6);
+#[test]
+fn overview_columns_shrink_stops_at_minimum_scale() {
+    let viewer_size = size(2000., 1000.);
+    let strip = rect(10., 0., 1980., 1000.);
 
-    let shrunk_w = result.regions[0].size.w;
-    assert!(shrunk_w < 600.);
-    for r in &result.regions {
-        assert!((r.size.w - shrunk_w).abs() < 1e-9);
-        assert!((r.size.h - shrunk_w).abs() < 1e-9);
+    let regions = overview_columns(strip, viewer_size, &[size(600., 400.)]);
+
+    // No room at all, so the source is clamped to scale 0.05.
+    assert_eq!(regions, vec![rect(2040., 490., 30., 20.)]);
+}
+
+#[test]
+fn overview_columns_zoom_one_places_regions_off_screen() {
+    let viewer_size = size(2000., 1000.);
+    let strip = rect(0., 0., 2000., 1000.);
+    let sources = [size(400., 300.), size(200., 100.)];
+
+    let regions = overview_columns(strip, viewer_size, &sources);
+
+    assert_eq!(regions.len(), 2);
+    for (r, source) in regions.iter().zip(&sources) {
+        assert!(r.loc.x >= viewer_size.w, "{regions:?}");
+        assert_eq!(r.size, *source);
     }
 }
 
@@ -423,19 +455,6 @@ mod fixture_tests {
         // Region is x in [96, 1824], so x=10 is in the left letterbox bar.
         assert_eq!(f.niri().output_under(Point::from((10., 540.))), None);
     }
-}
-
-#[test]
-fn overview_columns_zoom_one_places_regions_off_screen() {
-    let viewer_size = size(2000., 1000.);
-    let strip = rect(0., 0., 2000., 1000.);
-    let sources = [size(400., 300.)];
-
-    let result = overview_columns(strip, viewer_size, &sources);
-
-    assert!(result.strip_offset_x.abs() < 1e-9);
-    assert_eq!(result.regions.len(), 1);
-    assert!(result.regions[0].loc.x >= viewer_size.w);
 }
 
 /// A raw `global_space.output_under` call skips projection resolution, so
