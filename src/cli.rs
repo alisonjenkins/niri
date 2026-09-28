@@ -127,6 +127,14 @@ pub enum Msg {
         #[arg()]
         name: String,
     },
+    /// Show a virtual output on the focused physical monitor.
+    ///
+    /// Run with no name to stop showing it.
+    ViewOutput {
+        /// Name of the virtual output to show.
+        #[arg()]
+        name: Option<String>,
+    },
     /// Start continuously receiving events from the compositor.
     EventStream,
     /// Print the version of the running niri instance.

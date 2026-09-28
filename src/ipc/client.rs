@@ -8,7 +8,8 @@ use niri_config::OutputName;
 use niri_ipc::socket::Socket;
 use niri_ipc::{
     Action, Cast, CastKind, CastTarget, Event, KeyboardLayouts, LogicalOutput, Mode, Output,
-    OutputConfigChanged, Overview, Request, Response, Transform, Window, WindowLayout,
+    OutputConfigChanged, Overview, Request, Response, Transform, ViewOutputState, Window,
+    WindowLayout,
 };
 use serde_json::json;
 
@@ -53,6 +54,7 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
             name: name.clone(),
         },
         Msg::RemoveVirtualOutput { name } => Request::RemoveVirtualOutput { name: name.clone() },
+        Msg::ViewOutput { name } => Request::ViewOutput { name: name.clone() },
         Msg::Workspaces => Request::Workspaces,
         Msg::Windows => Request::Windows,
         Msg::Layers => Request::Layers,
@@ -602,6 +604,30 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
             }
 
             println!("Removed virtual output: {name}");
+        }
+        Msg::ViewOutput { .. } => {
+            let Response::ViewOutput(state) = response else {
+                bail!("unexpected response: expected ViewOutput, got {response:?}");
+            };
+
+            if json {
+                let response =
+                    serde_json::to_string(&state).context("error formatting response")?;
+                println!("{response}");
+                return Ok(());
+            }
+
+            match state {
+                ViewOutputState::Viewing { viewer, source } => {
+                    println!("Viewing {source} on {viewer}");
+                }
+                ViewOutputState::Stopped { viewer, source } => {
+                    println!("Stopped viewing {source} on {viewer}");
+                }
+                ViewOutputState::NotViewing => {
+                    println!("Not viewing any output");
+                }
+            }
         }
         Msg::RawRequest => {
             let output = serde_json::to_string(&response).context("error formatting response")?;
