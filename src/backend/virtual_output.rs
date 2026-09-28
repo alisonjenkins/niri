@@ -54,6 +54,15 @@ pub enum VirtualOutputError {
     /// Reported rather than propagated as a panic: losing the ability to add
     /// an output is a great deal better than taking the session down with it.
     IpcOutputsPoisoned,
+
+    /// The named output exists but is not a virtual output.
+    NotVirtual(String),
+
+    /// The virtual output exists but is turned off.
+    Disabled(String),
+
+    /// There is no physical output to show the virtual output on.
+    NoViewer,
 }
 
 impl fmt::Display for VirtualOutputError {
@@ -76,6 +85,15 @@ impl fmt::Display for VirtualOutputError {
                     f,
                     "the output list is in an inconsistent state; restart niri"
                 )
+            }
+            VirtualOutputError::NotVirtual(name) => {
+                write!(f, "output \"{name}\" is not a virtual output")
+            }
+            VirtualOutputError::Disabled(name) => {
+                write!(f, "virtual output \"{name}\" is off")
+            }
+            VirtualOutputError::NoViewer => {
+                write!(f, "no physical output to view it on")
             }
         }
     }
@@ -198,6 +216,18 @@ mod tests {
             VirtualOutputError::NotFound("steam".to_owned()).to_string(),
             "virtual output \"steam\" not found"
         );
+        assert_eq!(
+            VirtualOutputError::NotVirtual("steam".to_owned()).to_string(),
+            "output \"steam\" is not a virtual output"
+        );
+        assert_eq!(
+            VirtualOutputError::Disabled("steam".to_owned()).to_string(),
+            "virtual output \"steam\" is off"
+        );
+        assert_eq!(
+            VirtualOutputError::NoViewer.to_string(),
+            "no physical output to view it on"
+        );
     }
 
     #[test]
@@ -206,8 +236,13 @@ mod tests {
         // than matching on message text that is free to change.
         let taken = VirtualOutputError::NameTaken("steam".to_owned());
         let missing = VirtualOutputError::NotFound("steam".to_owned());
+        let not_virtual = VirtualOutputError::NotVirtual("steam".to_owned());
+        let disabled = VirtualOutputError::Disabled("steam".to_owned());
         assert_ne!(taken, missing);
+        assert_ne!(not_virtual, disabled);
+        assert_ne!(disabled, VirtualOutputError::NoViewer);
         assert!(matches!(taken, VirtualOutputError::NameTaken(_)));
+        assert!(matches!(not_virtual, VirtualOutputError::NotVirtual(_)));
     }
 
     #[test]
