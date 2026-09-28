@@ -443,6 +443,13 @@ pub struct Niri {
 
     /// Which virtual outputs are projected onto which physical monitors.
     pub projection_state: ProjectionState,
+
+    /// `layout.overview_zoom()` as of the last `rebuild_projections()` call.
+    ///
+    /// Lets `advance_animations` skip the rebuild on frames where the
+    /// overview isn't opening, closing or mid-gesture: projections only
+    /// change shape as the overview zoom changes.
+    projection_rebuild_overview_zoom: f64,
 }
 
 smithay::delegate_dispatch2!(State);
@@ -1945,6 +1952,8 @@ impl State {
 
         let config = self.niri.config.borrow().outputs.clone();
         self.niri.output_management_state.on_config_changed(config);
+
+        self.niri.rebuild_projections();
     }
 
     pub fn modify_output_config<F>(&mut self, name: &str, fun: F)
@@ -2789,6 +2798,7 @@ impl Niri {
             test_action_count: 0,
 
             projection_state: ProjectionState::default(),
+            projection_rebuild_overview_zoom: 1.,
         };
 
         niri.reset_pointer_inactivity_timer();
@@ -3049,6 +3059,8 @@ impl Niri {
 
         // Must be last since it will call queue_redraw(output) which needs things to be filled-in.
         self.reposition_outputs(Some(&output));
+
+        self.rebuild_projections();
     }
 
     pub fn output_exists(&self, output: &Output) -> bool {
@@ -3137,6 +3149,8 @@ impl Niri {
         if self.window_mru_ui.output() == Some(output) {
             self.cancel_mru();
         }
+
+        self.rebuild_projections();
     }
 
     pub fn output_resized(&mut self, output: &Output) {
@@ -3159,6 +3173,7 @@ impl Niri {
         }
 
         self.layout.update_output_size(output);
+        self.rebuild_projections();
 
         if let Some(state) = self.output_state.get_mut(output) {
             state.backdrop_buffer.resize(output_size);
@@ -3248,6 +3263,8 @@ impl Niri {
             );
             self.projection_state.projections = projections;
         }
+
+        self.projection_rebuild_overview_zoom = self.layout.overview_zoom();
     }
 
     /// Why `viewing` should be dropped, or `None` if it is still valid.
@@ -4331,6 +4348,14 @@ impl Niri {
         self.exit_confirm_dialog.advance_animations();
         self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
+
+        // Overview projections track the overview zoom, so only rebuild while
+        // it is actually changing (opening, closing or mid-gesture).
+        if (self.layout.overview_zoom() - self.projection_rebuild_overview_zoom).abs()
+            > f64::EPSILON
+        {
+            self.rebuild_projections();
+        }
 
         for state in self.output_state.values_mut() {
             if let Some(transition) = &mut state.screen_transition {
