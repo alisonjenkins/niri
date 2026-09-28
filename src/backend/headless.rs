@@ -26,7 +26,10 @@ use smithay::utils::Size;
 use smithay::wayland::presentation::Refresh;
 
 use super::{IpcOutputMap, OutputId, RenderResult};
-use crate::backend::virtual_output::{physical_size_mm, VirtualOutputError, VirtualOutputResult};
+use crate::backend::virtual_output::{
+    physical_size_mm, VirtualOutputError, VirtualOutputResult, VIRTUAL_OUTPUT_MAKE,
+    VIRTUAL_OUTPUT_MODEL,
+};
 use crate::niri::{Niri, RedrawState};
 use crate::render_helpers::{resources, shaders};
 use crate::utils::{get_monotonic_time, logical_output};
@@ -159,8 +162,8 @@ impl Headless {
                 format!("HEADLESS-{n}")
             }
         };
-        let make = "niri".to_string();
-        let model = "virtual".to_string();
+        let make = VIRTUAL_OUTPUT_MAKE.to_string();
+        let model = VIRTUAL_OUTPUT_MODEL.to_string();
         let serial = n.to_string();
 
         let refresh = i32::try_from(refresh_rate * 1000).unwrap_or(60_000);

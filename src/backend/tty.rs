@@ -62,7 +62,10 @@ use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 
 use super::{IpcOutputMap, OutputId, RenderResult};
-use crate::backend::virtual_output::{physical_size_mm, VirtualOutputError, VirtualOutputResult};
+use crate::backend::virtual_output::{
+    physical_size_mm, VirtualOutputError, VirtualOutputResult, VIRTUAL_OUTPUT_MAKE,
+    VIRTUAL_OUTPUT_MODEL,
+};
 use crate::frame_clock::FrameClock;
 use crate::niri::{Niri, RedrawState, State};
 use crate::render_helpers::debug::draw_damage;
@@ -2516,8 +2519,8 @@ impl Tty {
                 format!("HEADLESS-{n}")
             }
         };
-        let make = "niri".to_string();
-        let model = "virtual".to_string();
+        let make = VIRTUAL_OUTPUT_MAKE.to_string();
+        let model = VIRTUAL_OUTPUT_MODEL.to_string();
         let serial = n.to_string();
 
         let refresh = i32::try_from(refresh_rate * 1000).unwrap_or(60_000);
