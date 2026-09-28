@@ -77,10 +77,10 @@ impl Projection {
         region: Rectangle<f64, Logical>,
         kind: ProjectionKind,
     ) -> Result<Projection, ProjectionError> {
-        if source_rect.size.w <= 0. || source_rect.size.h <= 0. {
+        if !is_usable(source_rect) {
             return Err(ProjectionError::EmptySourceRect { source_rect });
         }
-        if region.size.w <= 0. || region.size.h <= 0. {
+        if !is_usable(region) {
             return Err(ProjectionError::EmptyRegion { region });
         }
         if viewer == source {
@@ -125,12 +125,28 @@ impl Projection {
     }
 }
 
+/// A rectangle with a finite location and a positive, finite size.
+fn is_usable(rect: Rectangle<f64, Logical>) -> bool {
+    rect.loc.x.is_finite()
+        && rect.loc.y.is_finite()
+        && rect.size.w.is_finite()
+        && rect.size.h.is_finite()
+        && rect.size.w > 0.
+        && rect.size.h > 0.
+}
+
 /// The largest rectangle with `source`'s aspect ratio that fits inside
 /// `viewer`, centred within it.
+///
+/// An empty source gives an empty rectangle at the viewer's centre, which
+/// [`Projection::new`] then rejects.
 pub fn letterbox(
     source: Size<f64, Logical>,
     viewer: Size<f64, Logical>,
 ) -> Rectangle<f64, Logical> {
+    if !(source.w > 0. && source.h > 0.) {
+        return Rectangle::new(Point::from((viewer.w / 2., viewer.h / 2.)), Size::default());
+    }
     let scale = (viewer.w / source.w).min(viewer.h / source.h);
     let size = Size::from((source.w * scale, source.h * scale));
     let loc = Point::from(((viewer.w - size.w) / 2., (viewer.h - size.h) / 2.));
