@@ -274,6 +274,32 @@ fn overview_columns_three_sources_overflow_shrinks_only_sources() {
     }
 }
 
+mod fixture_tests {
+    use smithay::utils::{Logical, Point};
+
+    use crate::tests::fixture::Fixture;
+
+    #[test]
+    fn output_under_passes_through_with_no_projections() {
+        let mut f = Fixture::new();
+        f.add_output(1, (1920, 1080));
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+
+        let physical = f.niri_output(1);
+        let point = Point::<f64, Logical>::from((100., 50.));
+
+        let (output, local) = f.niri().output_under(point).unwrap();
+        assert_eq!(output, &physical);
+        assert_eq!(local, point);
+    }
+}
+
 #[test]
 fn overview_columns_zoom_one_places_regions_off_screen() {
     let viewer_size = size(2000., 1000.);
