@@ -226,3 +226,17 @@ pub fn overview_columns(
         regions,
     }
 }
+
+/// Which projections exist and which one, if any, is currently being viewed.
+#[derive(Debug, Default)]
+pub struct ProjectionState {
+    pub projections: Vec<Projection>,
+    pub viewing: Option<Viewing>,
+}
+
+/// A viewer currently viewing a source's projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Viewing {
+    pub viewer: String,
+    pub source: String,
+}
