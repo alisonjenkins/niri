@@ -277,6 +277,7 @@ fn overview_columns_three_sources_overflow_shrinks_only_sources() {
 mod fixture_tests {
     use smithay::utils::{Logical, Point};
 
+    use crate::projection::{ProjectionKind, Viewing};
     use crate::tests::fixture::Fixture;
 
     #[test]
@@ -297,6 +298,72 @@ mod fixture_tests {
         let (output, local) = f.niri().output_under(point).unwrap();
         assert_eq!(output, &physical);
         assert_eq!(local, point);
+    }
+
+    #[test]
+    fn rebuild_projections_builds_view_projection_when_viewing_and_overview_closed() {
+        let mut f = Fixture::new();
+        f.add_output(1, (1920, 1080));
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+
+        let viewer_name = f.niri_output(1).name();
+        f.niri().projection_state.viewing = Some(Viewing {
+            viewer: viewer_name.clone(),
+            source: "steam".to_string(),
+        });
+        f.niri().rebuild_projections();
+
+        let projections = &f.niri().projection_state.projections;
+        assert_eq!(projections.len(), 1);
+        let projection = &projections[0];
+        assert_eq!(projection.kind, ProjectionKind::View);
+        assert_eq!(projection.viewer, viewer_name);
+        assert_eq!(projection.source, "steam");
+
+        // The 1280x800 source letterboxed into the 1920x1080 viewer scales
+        // by 1.35 (bound by height) and is offset 96px horizontally, so the
+        // viewer's centre maps back to the source's centre.
+        let source_point = projection.to_source(Point::from((960., 540.))).unwrap();
+        assert!((source_point.x - 640.).abs() < 1e-6);
+        assert!((source_point.y - 400.).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rebuild_projections_clears_viewing_when_source_removed() {
+        let mut f = Fixture::new();
+        f.add_output(1, (1920, 1080));
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+
+        let viewer_name = f.niri_output(1).name();
+        f.niri().projection_state.viewing = Some(Viewing {
+            viewer: viewer_name.clone(),
+            source: "steam".to_string(),
+        });
+        f.niri().rebuild_projections();
+        assert!(f.niri().projection_state.viewing.is_some());
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .remove_virtual_output(&mut state.niri, "steam")
+            .unwrap();
+        state.niri.rebuild_projections();
+
+        assert_eq!(f.niri().projection_state.viewing, None);
+        assert!(f.niri().projection_state.projections.is_empty());
     }
 }
 

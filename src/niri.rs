@@ -122,6 +122,7 @@ use wayland_server::protocol::wl_output::WlOutput;
 use crate::a11y::A11y;
 use crate::animation::Clock;
 use crate::backend::tty::SurfaceDmabufFeedback;
+use crate::backend::virtual_output::is_virtual_output;
 use crate::backend::{Backend, Headless, RenderResult, Tty, Winit};
 use crate::cursor::{CursorManager, CursorTextureCache, RenderCursor, XCursor};
 #[cfg(feature = "dbus")]
@@ -153,7 +154,7 @@ use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement,
 };
 use crate::niri_render_elements;
-use crate::projection::ProjectionState;
+use crate::projection::{letterbox, Projection, ProjectionKind, ProjectionState, Viewing};
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
 use crate::protocols::gamma_control::GammaControlManagerState;
@@ -3206,6 +3207,112 @@ impl Niri {
         backend.set_monitors_active(true);
 
         self.queue_redraw_all();
+    }
+
+    /// Recomputes `projection_state` from the current output set, overview
+    /// state and `viewing` request.
+    ///
+    /// Drops `viewing` if its viewer or source is no longer a live output in
+    /// the layout (FR-015), then rebuilds the projection list: an Overview
+    /// projection per (viewer, source) pair once the overview grows
+    /// projections of its own (a later phase), and a `View` projection while
+    /// `viewing` is set and the overview is closed.
+    pub fn rebuild_projections(&mut self) {
+        if let Some(viewing) = self.projection_state.viewing.clone() {
+            if let Some(reason) = self.viewing_drop_reason(&viewing) {
+                info!(
+                    viewer = %viewing.viewer,
+                    source = %viewing.source,
+                    reason,
+                    "stopped viewing output"
+                );
+                self.projection_state.viewing = None;
+            }
+        }
+
+        let mut projections = self.overview_projections();
+
+        if !self.layout.is_overview_open() {
+            if let Some(viewing) = &self.projection_state.viewing {
+                if let Some(projection) = self.view_projection(viewing) {
+                    projections.push(projection);
+                }
+            }
+        }
+
+        if projections != self.projection_state.projections {
+            debug!(
+                count = projections.len(),
+                kinds = ?projections.iter().map(|p| p.kind).collect::<Vec<_>>(),
+                "projection set changed"
+            );
+            self.projection_state.projections = projections;
+        }
+    }
+
+    /// Why `viewing` should be dropped, or `None` if it is still valid.
+    ///
+    /// A viewer must be a live, non-virtual output; a source must be a live
+    /// virtual output. Either missing means the thing being viewed, or the
+    /// place it was being shown, is gone.
+    fn viewing_drop_reason(&self, viewing: &Viewing) -> Option<&'static str> {
+        let viewer_ok = self
+            .layout
+            .outputs()
+            .any(|o| o.name() == viewing.viewer && !is_virtual_output(o));
+        if !viewer_ok {
+            return Some("viewer output no longer present");
+        }
+
+        let source_ok = self
+            .layout
+            .outputs()
+            .any(|o| o.name() == viewing.source && is_virtual_output(o));
+        if !source_ok {
+            return Some("source output no longer present");
+        }
+
+        None
+    }
+
+    /// The `View` projection for `viewing`: the source's full output
+    /// letterboxed onto the viewer.
+    fn view_projection(&self, viewing: &Viewing) -> Option<Projection> {
+        let viewer = self.layout.outputs().find(|o| o.name() == viewing.viewer)?;
+        let source = self.layout.outputs().find(|o| o.name() == viewing.source)?;
+
+        let source_size = output_size(source);
+        let viewer_size = output_size(viewer);
+        let source_rect = Rectangle::new(Point::from((0., 0.)), source_size);
+        let region = letterbox(source_size, viewer_size);
+
+        match Projection::new(
+            viewing.viewer.clone(),
+            viewing.source.clone(),
+            source_rect,
+            region,
+            ProjectionKind::View,
+        ) {
+            Ok(projection) => Some(projection),
+            Err(error) => {
+                warn!(
+                    viewer = %viewing.viewer,
+                    source = %viewing.source,
+                    %error,
+                    "failed to build view projection"
+                );
+                None
+            }
+        }
+    }
+
+    /// Overview-mode projections, one per (viewer, enabled source) pair.
+    ///
+    /// Always empty for now: overview columns are built in a later phase.
+    /// Kept as its own seam so `rebuild_projections` doesn't change shape
+    /// when they arrive.
+    fn overview_projections(&self) -> Vec<Projection> {
+        Vec::new()
     }
 
     pub fn output_under(&self, pos: Point<f64, Logical>) -> Option<(&Output, Point<f64, Logical>)> {
