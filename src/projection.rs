@@ -153,80 +153,46 @@ pub fn letterbox(
     Rectangle::new(loc, size)
 }
 
-/// Gap between the viewer strip and the first region, and between
-/// consecutive regions, as a fraction of the viewer's height.
+/// Gap between the viewer strip and the first region, between consecutive
+/// regions, and after the last region, as a fraction of the viewer's height.
 const OVERVIEW_COLUMN_GAP_FRACTION: f64 = 0.05;
-/// The row (strip + gaps + regions) is shrunk to fit within this fraction of
-/// the viewer's width when it would otherwise overflow.
-const OVERVIEW_ROW_FIT_FRACTION: f64 = 0.95;
-/// The row of source regions is never shrunk below this fraction of their
-/// own size, even if that means overflowing the target row width.
+/// Source regions are never shrunk below this fraction of their own size,
+/// even if that means overflowing the viewer.
 const OVERVIEW_MIN_SOURCE_SCALE: f64 = 0.05;
 
-/// The result of laying out other viewers' source regions next to a
-/// viewer's own overview strip.
-#[derive(Debug, Clone, PartialEq)]
-pub struct OverviewColumns {
-    /// How far the caller must shift `viewer_strip` horizontally so the
-    /// whole row (strip + gaps + regions) is centred on the viewer. The
-    /// regions below are already positioned as if that shift had been
-    /// applied.
-    pub strip_offset_x: f64,
-    pub regions: Vec<Rectangle<f64, Logical>>,
-}
-
 /// Lays out `sources` as a row of regions to the right of `viewer_strip`,
-/// for a viewer whose own overview workspaces are drawn at `viewer_strip`.
+/// the rectangle where the viewer draws its own overview workspaces.
 ///
-/// Each region starts at scale 1 (its own size) and regions are separated by
-/// a gap proportional to `viewer_size`'s height; the whole row is centred
-/// horizontally on the viewer, shrinking only the regions (never the strip)
-/// if the unshrunk row would not fit. When the strip already fills the
-/// viewer (overview closed, zoom 1) the regions are instead placed fully
-/// off-screen to the right, with no centring or shrinking.
+/// The strip itself is never moved or scaled. Regions start one gap right of
+/// the strip, one gap apart, centred vertically, at scale 1. If they do not
+/// fit before the viewer's right edge (keeping one gap of margin), all of
+/// them shrink by the same factor, down to [`OVERVIEW_MIN_SOURCE_SCALE`].
+/// When the strip already fills the viewer (overview closed, zoom 1) the
+/// regions lie fully off-screen to the right at scale 1.
 pub fn overview_columns(
     viewer_strip: Rectangle<f64, Logical>,
     viewer_size: Size<f64, Logical>,
     sources: &[Size<f64, Logical>],
-) -> OverviewColumns {
+) -> Vec<Rectangle<f64, Logical>> {
     let gap = OVERVIEW_COLUMN_GAP_FRACTION * viewer_size.h;
 
-    if viewer_strip.size.w >= viewer_size.w {
-        let mut cursor = viewer_size.w;
-        let regions = sources
-            .iter()
-            .map(|source| {
-                cursor += gap;
-                let loc = Point::from((cursor, (viewer_size.h - source.h) / 2.));
-                cursor += source.w;
-                Rectangle::new(loc, *source)
-            })
-            .collect();
-
-        return OverviewColumns {
-            strip_offset_x: 0.,
-            regions,
-        };
-    }
-
-    let unshrunk_sources_width: f64 = sources.iter().map(|s| s.w).sum();
-    let gap_total = gap * sources.len() as f64;
-    let unshrunk_row_width = viewer_strip.size.w + gap_total + unshrunk_sources_width;
-
-    let target_row_width = OVERVIEW_ROW_FIT_FRACTION * viewer_size.w;
-    let source_scale = if unshrunk_row_width <= target_row_width || unshrunk_sources_width <= 0. {
-        1.
+    let (start_x, source_scale) = if viewer_strip.size.w >= viewer_size.w {
+        (viewer_size.w, 1.)
     } else {
-        let available_for_sources = target_row_width - viewer_strip.size.w - gap_total;
-        (available_for_sources / unshrunk_sources_width).max(OVERVIEW_MIN_SOURCE_SCALE)
+        let strip_right = viewer_strip.loc.x + viewer_strip.size.w;
+        let sources_width: f64 = sources.iter().map(|s| s.w).sum();
+        let gaps_and_margin = gap * (sources.len() as f64 + 1.);
+        let room = viewer_size.w - strip_right - gaps_and_margin;
+        let scale = if sources_width <= room || sources_width <= 0. {
+            1.
+        } else {
+            (room / sources_width).max(OVERVIEW_MIN_SOURCE_SCALE)
+        };
+        (strip_right, scale)
     };
 
-    let sources_width: f64 = sources.iter().map(|s| s.w * source_scale).sum();
-    let row_width = viewer_strip.size.w + gap_total + sources_width;
-    let strip_offset_x = (viewer_size.w - row_width) / 2. - viewer_strip.loc.x;
-
-    let mut cursor = viewer_strip.loc.x + strip_offset_x + viewer_strip.size.w;
-    let regions = sources
+    let mut cursor = start_x;
+    sources
         .iter()
         .map(|source| {
             let size = Size::from((source.w * source_scale, source.h * source_scale));
@@ -235,12 +201,7 @@ pub fn overview_columns(
             cursor += size.w;
             Rectangle::new(loc, size)
         })
-        .collect();
-
-    OverviewColumns {
-        strip_offset_x,
-        regions,
-    }
+        .collect()
 }
 
 /// Which projections exist and which one, if any, is currently being viewed.
