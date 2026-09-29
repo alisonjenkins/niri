@@ -229,6 +229,8 @@ Pointer input on the monitor reaches the virtual output at the matching position
 
 Opening the overview while viewing shows the normal overview, with the physical monitor's own workspaces and every virtual output's column, including the one being viewed. Closing the overview returns to view mode, unless the physical monitor became the active monitor meanwhile.
 
+When view mode was entered by clicking a virtual output's workspace in the overview, pressing Escape (with no modifiers) ends it and returns the physical monitor to the workspace it had before; the label then reads "Viewing: `<name>` — Esc to return". That Escape never reaches the application. It is left alone while the overview, the screenshot UI, the window switcher or the lock screen is open, and while the focused application inhibits keyboard shortcuts. View mode entered with `view-output` passes Escape to the application as usual.
+
 Making the physical monitor showing the view the active monitor again ends view mode and shows its own workspaces: clicking one of its workspaces in the overview, moving to it with the keyboard there, or a `focus-monitor-*` bind. Focusing some other monitor leaves view mode alone.
 
 View mode ends on its own, with a one-line notice on the monitor, if the virtual output being viewed turns off or is removed, or if the physical monitor showing it goes away. Running `niri msg view-output` with no name also ends it and returns the monitor to its own workspaces.

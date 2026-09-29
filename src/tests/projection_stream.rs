@@ -10,7 +10,7 @@ use smithay::output::Output;
 use smithay::utils::{Physical, Rectangle, Scale, SERIAL_COUNTER};
 
 use crate::niri::{OutputRenderElements, RedrawState};
-use crate::projection::{ProjectionKind, Viewing};
+use crate::projection::{ProjectionKind, ViewOrigin, Viewing};
 use crate::render_helpers::{RenderCtx, RenderTarget};
 use crate::tests::fixture::Fixture;
 
@@ -159,6 +159,7 @@ fn egl_source_render_is_unaffected_by_overview_and_view_projections() {
     f.niri().projection_state.viewing = Some(Viewing {
         viewer: viewer.name(),
         source: "steam".to_string(),
+        origin: ViewOrigin::Command,
     });
     f.niri().rebuild_projections();
     assert_eq!(f.niri().projection_state.projections.len(), 1);
@@ -195,6 +196,7 @@ fn egl_pointer_on_the_viewer_inside_a_view_projection_is_not_drawn_on_the_source
     f.niri().projection_state.viewing = Some(Viewing {
         viewer: viewer.name(),
         source: "steam".to_string(),
+        origin: ViewOrigin::Command,
     });
     f.niri().rebuild_projections();
 

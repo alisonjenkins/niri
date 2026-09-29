@@ -216,4 +216,15 @@ pub struct ProjectionState {
 pub struct Viewing {
     pub viewer: String,
     pub source: String,
+    pub origin: ViewOrigin,
+}
+
+/// How view mode was entered, which decides whether Escape leaves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewOrigin {
+    /// `niri msg view-output` or the `view-output` bind. Escape belongs to the viewed app.
+    Command,
+    /// Clicking or tapping a virtual output's workspace in the overview. Escape returns to
+    /// the viewer, since the user only passed through the virtual output from there.
+    Overview,
 }

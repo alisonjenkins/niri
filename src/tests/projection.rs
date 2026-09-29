@@ -310,7 +310,7 @@ mod fixture_tests {
     use smithay::utils::{Logical, Point};
 
     use crate::niri::LockState;
-    use crate::projection::{ProjectionKind, Viewing};
+    use crate::projection::{ProjectionKind, ViewOrigin, Viewing};
     use crate::tests::fixture::Fixture;
 
     #[test]
@@ -349,6 +349,7 @@ mod fixture_tests {
         f.niri().projection_state.viewing = Some(Viewing {
             viewer: viewer_name.clone(),
             source: "steam".to_string(),
+            origin: ViewOrigin::Command,
         });
         f.niri().rebuild_projections();
 
@@ -383,6 +384,7 @@ mod fixture_tests {
         f.niri().projection_state.viewing = Some(Viewing {
             viewer: viewer_name.clone(),
             source: "steam".to_string(),
+            origin: ViewOrigin::Command,
         });
         f.niri().rebuild_projections();
         assert!(f.niri().projection_state.viewing.is_some());
@@ -416,6 +418,7 @@ mod fixture_tests {
         f.niri().projection_state.viewing = Some(Viewing {
             viewer: viewer_name.clone(),
             source: "steam".to_string(),
+            origin: ViewOrigin::Command,
         });
         f.niri().rebuild_projections();
 
@@ -450,6 +453,7 @@ mod fixture_tests {
         f.niri().projection_state.viewing = Some(Viewing {
             viewer: viewer_name,
             source: "steam".to_string(),
+            origin: ViewOrigin::Command,
         });
         f.niri().rebuild_projections();
 
@@ -473,6 +477,7 @@ mod fixture_tests {
         f.niri().projection_state.viewing = Some(Viewing {
             viewer: viewer.name(),
             source: "steam".to_string(),
+            origin: ViewOrigin::Command,
         });
         f.niri().rebuild_projections();
 
@@ -502,6 +507,7 @@ mod fixture_tests {
         f.niri().projection_state.viewing = Some(Viewing {
             viewer: viewer.name(),
             source: "steam".to_string(),
+            origin: ViewOrigin::Command,
         });
         // As start_viewing() does; a viewer left active would end view mode on the next refresh.
         let steam = f
@@ -610,7 +616,7 @@ mod overview_tests {
 
     use crate::layout::HitType;
     use crate::niri::Niri;
-    use crate::projection::{Projection, ProjectionKind, Viewing};
+    use crate::projection::{Projection, ProjectionKind, ViewOrigin, Viewing};
     use crate::tests::client::ClientId;
     use crate::tests::fixture::Fixture;
 
@@ -834,6 +840,7 @@ mod overview_tests {
         f.niri().projection_state.viewing = Some(Viewing {
             viewer: viewer.name(),
             source: "steam".to_string(),
+            origin: ViewOrigin::Command,
         });
         f.niri().rebuild_projections();
 
@@ -1145,7 +1152,7 @@ mod view_tests {
     use super::overview_tests::{map_window_on, output_named, set_up, window_center_on};
     use crate::backend::virtual_output::VirtualOutputError;
     use crate::layout::workspace::WorkspaceId;
-    use crate::projection::{ProjectionKind, Viewing};
+    use crate::projection::{ProjectionKind, ViewOrigin, Viewing};
     use crate::tests::client::LayerConfigureProps;
     use crate::tests::fixture::Fixture;
 
@@ -1439,6 +1446,7 @@ mod view_tests {
             Some(Viewing {
                 viewer: viewer.clone(),
                 source: "steam".to_string(),
+                origin: ViewOrigin::Command,
             })
         );
 
@@ -1503,6 +1511,7 @@ mod view_tests {
             Some(Viewing {
                 viewer: viewer.name(),
                 source: "steam".to_string(),
+                origin: ViewOrigin::Overview,
             })
         );
         assert_eq!(active_output_name(&mut f), "steam");
@@ -1531,6 +1540,7 @@ mod view_tests {
             Some(Viewing {
                 viewer: second.name(),
                 source: "steam".to_string(),
+                origin: ViewOrigin::Overview,
             })
         );
     }
@@ -2165,7 +2175,7 @@ mod input_tests {
     use crate::input::move_grab::MoveGrab;
     use crate::input::AnyStartData;
     use crate::layout::HitType;
-    use crate::projection::{Projection, ProjectionKind};
+    use crate::projection::{Projection, ProjectionKind, ViewOrigin};
     use crate::tests::client::{ClientId, LayerConfigureProps};
     use crate::tests::fixture::Fixture;
     use crate::tests::input;
@@ -2585,6 +2595,156 @@ mod input_tests {
         press(&mut f, &["LWIN", "LFSH", "LEFT"]);
 
         assert_back_on_the_viewer(&mut f, &viewer, 0);
+    }
+
+    /// A focused app window on steam, viewed either from the overview (by clicking the window
+    /// in steam's column) or by command. Returns the app's surface to read its key events.
+    fn app_in_view(origin: ViewOrigin) -> (Fixture, Output, ClientId, WlSurface) {
+        let mut f = set_up_with(keyboard_config(), (5120, 1440), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        f.niri().layout.focus_output(&steam);
+        let app = f.client(id).create_window();
+        let surface = app.surface.clone();
+        app.commit();
+        f.roundtrip(id);
+        let app = f.client(id).window(&surface);
+        app.attach_new_buffer();
+        app.set_size(400, 300);
+        app.ack_last_and_commit();
+        f.double_roundtrip(id);
+        let window = f
+            .niri()
+            .layout
+            .windows_for_output(&steam)
+            .next()
+            .unwrap()
+            .window
+            .clone();
+        map_window_on(&mut f, id, &viewer, 400, 300);
+        f.niri().layout.focus_output(&viewer);
+        let viewer_centre = center(geometry(&mut f, &viewer));
+        f.niri_state().move_cursor(viewer_centre);
+
+        match origin {
+            ViewOrigin::Overview => {
+                toggle_overview(&mut f);
+                let projection = overview_projection(&mut f, "steam");
+                let target = projection.to_viewer(window_center_on(f.niri(), &steam, &window))
+                    + geometry(&mut f, &viewer).loc;
+                move_pointer_to(&mut f, target);
+                click(&mut f);
+            }
+            ViewOrigin::Command => {
+                f.niri_state().view_output(Some("steam")).unwrap();
+                refresh(&mut f);
+            }
+        }
+        f.double_roundtrip(id);
+
+        let viewing = f.niri().projection_state.viewing.clone().unwrap();
+        assert_eq!(viewing.origin, origin);
+        assert_eq!(f.niri().layout.active_output(), Some(&steam));
+        let _ = f.client(id).state.recent_keyboard_events(&surface);
+        (f, viewer, id, surface)
+    }
+
+    fn key_events(f: &mut Fixture, id: ClientId, surface: &WlSurface) -> Vec<String> {
+        f.double_roundtrip(id);
+        f.client(id)
+            .state
+            .recent_keyboard_events(surface)
+            .map(|event| event.to_string())
+            .filter(|event| event.starts_with("key "))
+            .collect()
+    }
+
+    const KEY_ESC: &str = "1";
+
+    #[test]
+    fn escape_leaves_a_view_entered_from_the_overview_without_reaching_the_app() {
+        let (mut f, viewer, id, surface) = app_in_view(ViewOrigin::Overview);
+        assert_eq!(
+            f.niri().view_output_label.text_on(&viewer.name()),
+            Some("Viewing: steam — Esc to return")
+        );
+
+        press(&mut f, &["ESC"]);
+
+        assert_back_on_the_viewer(&mut f, &viewer, 0);
+        assert_eq!(key_events(&mut f, id, &surface), Vec::<String>::new());
+    }
+
+    #[test]
+    fn escape_goes_to_the_app_in_a_view_entered_by_command() {
+        let (mut f, viewer, id, surface) = app_in_view(ViewOrigin::Command);
+        assert_eq!(
+            f.niri().view_output_label.text_on(&viewer.name()),
+            Some("Viewing: steam")
+        );
+
+        press(&mut f, &["ESC"]);
+
+        assert!(f.niri().projection_state.viewing.is_some());
+        assert_eq!(
+            key_events(&mut f, id, &surface),
+            [
+                format!("key pressed: {KEY_ESC}"),
+                format!("key released: {KEY_ESC}")
+            ]
+        );
+    }
+
+    #[test]
+    fn escape_goes_to_a_shortcut_inhibiting_app_in_a_view_from_the_overview() {
+        let (mut f, _viewer, id, surface) = app_in_view(ViewOrigin::Overview);
+        let _inhibitor = f.client(id).state.inhibit_shortcuts(&surface);
+        f.roundtrip(id);
+
+        press(&mut f, &["ESC"]);
+
+        assert!(f.niri().projection_state.viewing.is_some());
+        assert_eq!(
+            key_events(&mut f, id, &surface),
+            [
+                format!("key pressed: {KEY_ESC}"),
+                format!("key released: {KEY_ESC}")
+            ]
+        );
+    }
+
+    #[test]
+    fn escape_in_the_overview_over_a_view_from_the_overview_only_closes_the_overview() {
+        let (mut f, _viewer, id, surface) = app_in_view(ViewOrigin::Overview);
+        let steam = output_named(&mut f, "steam");
+        press(&mut f, &["LWIN", "AD09"]);
+        assert!(f.niri().layout.is_overview_open());
+
+        press(&mut f, &["ESC"]);
+
+        assert!(!f.niri().layout.is_overview_open());
+        assert!(f.niri().projection_state.viewing.is_some());
+        assert_eq!(f.niri().layout.active_output(), Some(&steam));
+        let events = key_events(&mut f, id, &surface);
+        assert!(
+            !events.iter().any(|e| e.ends_with(&format!(": {KEY_ESC}"))),
+            "the overview's Escape reached the app: {events:?}"
+        );
+    }
+
+    #[test]
+    fn modified_escape_goes_to_the_app_in_a_view_from_the_overview() {
+        let (mut f, _viewer, id, surface) = app_in_view(ViewOrigin::Overview);
+
+        press(&mut f, &["LFSH", "ESC"]);
+
+        assert!(f.niri().projection_state.viewing.is_some());
+        let events = key_events(&mut f, id, &surface);
+        assert!(
+            events.contains(&format!("key pressed: {KEY_ESC}")),
+            "Shift+Escape did not reach the app: {events:?}"
+        );
     }
 
     fn active_view_pos(f: &mut Fixture, output: &Output) -> f64 {
