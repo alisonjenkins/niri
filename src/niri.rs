@@ -159,7 +159,8 @@ use crate::layout::{
 };
 use crate::niri_render_elements;
 use crate::projection::{
-    letterbox, overview_columns, Projection, ProjectionKind, ProjectionState, ViewOrigin, Viewing,
+    band_rect, column_layout, letterbox, scroll_to_show, Band, ColumnSource, Projection,
+    ProjectionKind, ProjectionState, ViewOrigin, Viewing, BAND_FRACTION,
 };
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
@@ -187,7 +188,7 @@ use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
-use crate::ui::overview_column_label::OverviewColumnLabels;
+use crate::ui::overview_band::OverviewBand;
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
 use crate::ui::view_output_label::ViewOutputLabel;
@@ -459,16 +460,12 @@ pub struct Niri {
     /// `layout.overview_zoom()` as of the last `rebuild_projections()` call.
     ///
     /// Lets `advance_animations` skip the rebuild on frames where the
-    /// overview isn't opening, closing or mid-gesture: projections only
+    /// overview is closed and not closing: with no band, projections only
     /// change shape as the overview zoom changes.
     projection_rebuild_overview_zoom: f64,
 
-    /// Source-name labels drawn above overview projection columns.
-    overview_column_labels: OverviewColumnLabels,
-
-    /// Opaque fill under each overview column, keyed by (viewer, source), so the viewer's
-    /// own windows scrolled off their workspace do not show through a translucent backdrop.
-    overview_column_backings: HashMap<(String, String), SolidColorBuffer>,
+    /// The fill, labels and highlights of the overview bands.
+    overview_band: OverviewBand,
 
     /// "Viewing: <name>" and view-mode notices, drawn on the viewer.
     pub view_output_label: ViewOutputLabel,
@@ -617,6 +614,8 @@ struct OutputUnder<'a> {
     /// The projection whose region on a viewer the position lies in, so `output`
     /// is the projection's source and not where the pointer really is.
     projection: Option<&'a Projection>,
+    /// The position is in the viewer's overview band but on no tile, so nothing may react.
+    band: bool,
 }
 
 #[derive(Debug, Default)]
@@ -2894,8 +2893,7 @@ impl Niri {
 
             projection_state: ProjectionState::default(),
             projection_rebuild_overview_zoom: 1.,
-            overview_column_labels: OverviewColumnLabels::default(),
-            overview_column_backings: HashMap::new(),
+            overview_band: OverviewBand::default(),
             view_output_label,
         };
 
@@ -3331,10 +3329,9 @@ impl Niri {
     /// state and `viewing` request.
     ///
     /// Drops `viewing` if its viewer or source is no longer a live output in
-    /// the layout (FR-015), then rebuilds the projection list: an Overview
-    /// projection per (viewer, source) pair once the overview grows
-    /// projections of its own (a later phase), and a `View` projection while
-    /// `viewing` is set and the overview is closed.
+    /// the layout (FR-015), then rebuilds the overview bands with a `Tile`
+    /// projection per visible tile while the overview is open, and a `View`
+    /// projection while `viewing` is set and the overview is closed.
     pub fn rebuild_projections(&mut self) {
         if let Some(viewing) = self.projection_state.viewing.clone() {
             if let Some(reason) = self.viewing_drop_reason(&viewing) {
@@ -3354,22 +3351,33 @@ impl Niri {
         // `viewing` is kept so the view comes back after unlocking.
         let locked = !matches!(self.lock_state, LockState::Unlocked);
 
-        let mut projections = if locked {
-            Vec::new()
+        let (mut projections, mut bands) = if locked {
+            (Vec::new(), Vec::new())
         } else {
-            self.overview_projections()
+            self.overview_bands()
         };
 
         if !locked && !self.layout.is_overview_open() {
             if let Some(viewing) = &self.projection_state.viewing {
                 if let Some(projection) = self.view_projection(viewing) {
                     // View mode draws instead of the closing overview's
-                    // columns, so they must not take input either.
+                    // band, so it must not take input either.
                     projections.retain(|p| p.viewer != projection.viewer);
+                    bands.retain(|band| band.viewer != projection.viewer);
                     projections.push(projection);
                 }
             }
         }
+
+        self.log_band_changes(&bands, &projections);
+        self.set_overview_band_hooks(&bands);
+        {
+            let config = self.config.borrow();
+            let focus_ring = &config.layout.focus_ring;
+            self.overview_band
+                .update(&bands, focus_ring.active_color, focus_ring.width);
+        }
+        self.projection_state.bands = bands;
 
         if projections != self.projection_state.projections {
             // Geometry changes every frame while the overview animates; only
@@ -3390,26 +3398,6 @@ impl Niri {
                 );
             }
             self.projection_state.projections = projections;
-
-            let projections = &self.projection_state.projections;
-            self.overview_column_labels
-                .retain_sources(|name| projections.iter().any(|p| p.source == name));
-
-            let overview: Vec<_> = projections
-                .iter()
-                .filter(|p| p.kind == ProjectionKind::Overview)
-                .collect();
-            self.overview_column_backings.retain(|(viewer, source), _| {
-                overview
-                    .iter()
-                    .any(|p| &p.viewer == viewer && &p.source == source)
-            });
-            for p in overview {
-                self.overview_column_backings
-                    .entry((p.viewer.clone(), p.source.clone()))
-                    .or_insert_with(|| SolidColorBuffer::new(p.region.size, VIEW_BACKDROP_COLOR))
-                    .resize(p.region.size);
-            }
         }
 
         self.projection_rebuild_overview_zoom = self.layout.overview_zoom();
@@ -3706,68 +3694,211 @@ impl Niri {
         }
     }
 
-    /// Overview-mode projections, one per (viewer, enabled source) pair,
-    /// while the overview is open or animating.
+    /// The overview band of every physical monitor whose overview is open or animating, and a
+    /// `Tile` projection for each tile on screen in it.
     ///
-    /// Each source shows its own overview workspace strip (the x-extent of
-    /// its workspaces over its full height) in a column right of the
-    /// viewer's strip, laid out by [`overview_columns`].
-    fn overview_projections(&self) -> Vec<Projection> {
-        if !self.layout.is_overview_open() && self.layout.overview_zoom() >= 1. {
-            return Vec::new();
-        }
-
-        let mut sources: Vec<(String, Rectangle<f64, Logical>)> = self
+    /// A tile maps its workspace's rectangle in the source's own overview onto the tile, so
+    /// hit-testing, clicks and drops resolve through the source's overview unchanged. The
+    /// column keeps each band's scroll offset while the band exists; a new band starts scrolled
+    /// to the first source's active workspace.
+    fn overview_bands(&self) -> (Vec<Projection>, Vec<Band>) {
+        let mut sources: Vec<(&Monitor<Mapped>, ColumnSource)> = self
             .layout
             .monitors()
             .filter(|mon| is_virtual_output(mon.output()))
             .filter_map(|mon| {
-                let strip = workspace_strip(mon)?;
-                Some((mon.output().name(), strip))
+                mon.overview_clamped_progress()?;
+                // Tiles take their proportions from the source's overview workspaces so each
+                // tile has exactly the aspect ratio of the rectangle it projects.
+                let ws_size = mon.workspaces_render_geo().next()?.size;
+                let column_source = ColumnSource {
+                    name: mon.output().name(),
+                    output_size: ws_size,
+                    workspace_count: mon.workspaces_with_render_geo_cull(false).count(),
+                    active_workspace: mon.active_workspace_idx(),
+                };
+                Some((mon, column_source))
             })
             .collect();
         if sources.is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
-        sources.sort_by(|a, b| a.0.cmp(&b.0));
-        let source_sizes: Vec<_> = sources.iter().map(|(_, rect)| rect.size).collect();
+        sources.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+        let column_sources: Vec<ColumnSource> = sources.iter().map(|(_, s)| s.clone()).collect();
 
         let mut projections = Vec::new();
+        let mut bands = Vec::new();
         for viewer in self
             .layout
             .monitors()
             .filter(|mon| !is_virtual_output(mon.output()))
         {
-            let viewer_name = viewer.output().name();
-            let Some(viewer_strip) = workspace_strip(viewer) else {
-                warn!(viewer = %viewer_name, "viewer has no overview workspace strip");
+            let Some(progress) = viewer.overview_clamped_progress() else {
                 continue;
             };
+            let viewer_name = viewer.output().name();
             let viewer_size = output_size(viewer.output());
-            let regions = overview_columns(viewer_strip, viewer_size, &source_sizes);
+            let rect = band_rect(viewer_size, progress);
+            if rect.size.w <= 0. {
+                continue;
+            }
+            let full = band_rect(viewer_size, 1.);
+            let column_rect = Rectangle::new(rect.loc, full.size);
 
-            for ((source_name, source_rect), region) in sources.iter().zip(regions) {
-                match Projection::new(
-                    viewer_name.clone(),
-                    source_name.clone(),
-                    *source_rect,
-                    region,
-                    ProjectionKind::Overview,
-                ) {
-                    Ok(projection) => projections.push(projection),
-                    Err(error) => warn!(
-                        viewer = %viewer_name,
-                        source = %source_name,
-                        ?source_rect,
-                        ?region,
-                        ?viewer_strip,
-                        %error,
-                        "skipping overview projection"
-                    ),
+            let previous = self
+                .projection_state
+                .bands
+                .iter()
+                .find(|band| band.viewer == viewer_name);
+            let scroll = match previous {
+                Some(band) => band.column.scroll,
+                None => column_sources.first().map_or(0., |first| {
+                    scroll_to_show(
+                        column_rect,
+                        &column_sources,
+                        0.,
+                        (0, first.active_workspace),
+                    )
+                }),
+            };
+            let column = column_layout(column_rect, &column_sources, scroll);
+            if column.groups.is_empty() {
+                continue;
+            }
+
+            for group in &column.groups {
+                let Some((source, _)) = sources.get(group.source) else {
+                    continue;
+                };
+                for tile in &group.tiles {
+                    if tile.region.intersection(rect).is_none() {
+                        continue;
+                    }
+                    let Some((ws, source_rect)) = source
+                        .workspaces_with_render_geo_cull(false)
+                        .nth(tile.workspace)
+                    else {
+                        debug!(
+                            source = %group.name,
+                            workspace = tile.workspace,
+                            "overview band tile has no workspace"
+                        );
+                        continue;
+                    };
+                    match Projection::new(
+                        viewer_name.clone(),
+                        group.name.clone(),
+                        source_rect,
+                        tile.region,
+                        ProjectionKind::Tile { workspace: ws.id() },
+                    ) {
+                        Ok(projection) => projections.push(projection),
+                        Err(error) => warn!(
+                            viewer = %viewer_name,
+                            source = %group.name,
+                            workspace = tile.workspace,
+                            ?source_rect,
+                            region = ?tile.region,
+                            %error,
+                            "skipping overview band tile"
+                        ),
+                    }
                 }
             }
+
+            let skipped = column
+                .skipped
+                .iter()
+                .filter_map(|idx| column_sources.get(*idx))
+                .map(|source| source.name.clone())
+                .collect();
+            bands.push(Band {
+                viewer: viewer_name,
+                rect,
+                column,
+                skipped,
+            });
         }
-        projections
+        (projections, bands)
+    }
+
+    /// Reserves each band on its physical monitor, and lets each source shown in a band reach
+    /// its offscreen overview workspaces; clears both everywhere else.
+    fn set_overview_band_hooks(&mut self, bands: &[Band]) {
+        let outputs: Vec<Output> = self.layout.outputs().cloned().collect();
+        for output in outputs {
+            let name = output.name();
+            if is_virtual_output(&output) {
+                let shown = bands
+                    .iter()
+                    .any(|band| band.column.groups.iter().any(|group| group.name == name));
+                self.layout.set_overview_offscreen_reachable(&output, shown);
+            } else {
+                let inset = if bands.iter().any(|band| band.viewer == name) {
+                    BAND_FRACTION * output_size(&output).w
+                } else {
+                    0.
+                };
+                self.layout.set_overview_right_inset(&output, inset);
+            }
+        }
+    }
+
+    /// Logs when a band appears, disappears or changes shape, not as it animates or scrolls.
+    fn log_band_changes(&self, bands: &[Band], projections: &[Projection]) {
+        let structure = |band: &Band, projections: &[Projection]| {
+            let groups: Vec<(String, usize)> = band
+                .column
+                .groups
+                .iter()
+                .map(|group| (group.name.clone(), group.tiles.len()))
+                .collect();
+            let visible = projections
+                .iter()
+                .filter(|p| {
+                    p.viewer == band.viewer && matches!(p.kind, ProjectionKind::Tile { .. })
+                })
+                .count();
+            let scroll_range = (band.column.content_h - band.rect.size.h).max(0.).round() as i64;
+            (
+                band.viewer.clone(),
+                groups,
+                visible,
+                scroll_range,
+                band.skipped.clone(),
+            )
+        };
+
+        let before: Vec<_> = self
+            .projection_state
+            .bands
+            .iter()
+            .map(|band| structure(band, &self.projection_state.projections))
+            .collect();
+        let after: Vec<_> = bands
+            .iter()
+            .map(|band| structure(band, projections))
+            .collect();
+
+        for (viewer, ..) in &before {
+            if !after.iter().any(|entry| &entry.0 == viewer) {
+                debug!(%viewer, "overview band removed");
+            }
+        }
+        for entry in &after {
+            if before.contains(entry) {
+                continue;
+            }
+            let (viewer, groups, visible, scroll_range, skipped) = entry;
+            debug!(
+                %viewer,
+                ?groups,
+                visible_tiles = visible,
+                scroll_range,
+                ?skipped,
+                "overview band column changed"
+            );
+        }
     }
 
     /// Resolves a global-space position to an output and a position local to
@@ -3792,27 +3923,29 @@ impl Niri {
             output,
             pos_within_output,
             projection: None,
+            band: false,
         };
 
         let viewer_name = output.name();
-        let is_viewer = self
+        let band = self
             .projection_state
-            .projections
+            .bands
             .iter()
-            .any(|p| p.viewer == viewer_name);
+            .find(|band| band.viewer == viewer_name);
+        let is_viewer = band.is_some()
+            || self
+                .projection_state
+                .projections
+                .iter()
+                .any(|p| p.viewer == viewer_name);
         // The viewer's overlay layer is drawn above its projections.
         if is_viewer && self.is_layer_surface_under(output, Layer::Overlay, pos_within_output) {
             return Some(unprojected);
         }
-        // So is its top layer while it draws overview columns: render_inner() puts the top
-        // layer above the workspaces and the columns, unless a fullscreen window renders above
+        // So is its top layer while it draws an overview band: render_inner() puts the top
+        // layer above the workspaces and the band, unless a fullscreen window renders above
         // the top layer. View mode hides the top layer instead.
-        let shows_columns = self
-            .projection_state
-            .projections
-            .iter()
-            .any(|p| p.viewer == viewer_name && p.kind == ProjectionKind::Overview);
-        let top_layer_above = shows_columns
+        let top_layer_above = band.is_some()
             && self
                 .layout
                 .monitor_for_output(output)
@@ -3843,6 +3976,7 @@ impl Niri {
                     output: source,
                     pos_within_output: source_pos,
                     projection: Some(projection),
+                    band: false,
                 });
             }
 
@@ -3853,6 +3987,13 @@ impl Niri {
 
         if inside_view_projection {
             return None;
+        }
+
+        if band.is_some_and(|band| band.rect.contains(pos_within_output)) {
+            return Some(OutputUnder {
+                band: true,
+                ..unprojected
+            });
         }
 
         Some(unprojected)
@@ -3867,6 +4008,11 @@ impl Niri {
         self.resolve_output_under(pos)
             .and_then(|hit| hit.projection)
             .map_or(1., Projection::scale)
+    }
+
+    /// Whether `pos` is in an overview band where no tile is, so input there does nothing.
+    pub fn is_in_overview_band(&self, pos: Point<f64, Logical>) -> bool {
+        self.resolve_output_under(pos).is_some_and(|hit| hit.band)
     }
 
     /// Whether a mapped surface of `layer` on `output` that takes input is under the
@@ -4204,7 +4350,7 @@ impl Niri {
         let hit = self.resolve_output_under(pos)?;
         let (output, pos_within_output) = (hit.output, hit.pos_within_output);
 
-        if self.is_sticky_obscured_under(&hit, pos) {
+        if hit.band || self.is_sticky_obscured_under(&hit, pos) {
             return None;
         }
 
@@ -4253,7 +4399,7 @@ impl Niri {
             return Some(window);
         }
 
-        if self.is_layout_obscured_under(output, pos_within_output) {
+        if hit.band || self.is_layout_obscured_under(output, pos_within_output) {
             return None;
         }
 
@@ -4294,6 +4440,7 @@ impl Niri {
             output,
             pos_within_output,
             projection,
+            band,
         } = hit;
         let projected = projection.is_some();
         rv.output = Some(output.clone());
@@ -4413,6 +4560,9 @@ impl Niri {
                 .map(mapped_hit_data)
         };
         let window_under = || {
+            if band {
+                return None;
+            }
             self.layout
                 .window_under(output, pos_within_output)
                 .map(mapped_hit_data)
@@ -4423,7 +4573,8 @@ impl Niri {
         let mut under =
             layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
 
-        let is_overview_open = self.layout.is_overview_open();
+        // The band covers the bottom and background layers too, including while it closes.
+        let is_overview_open = self.layout.is_overview_open() || band;
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
@@ -5112,10 +5263,12 @@ impl Niri {
         self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
 
-        // Overview projections track the overview zoom, so only rebuild while
-        // it is actually changing (opening, closing or mid-gesture).
-        if (self.layout.overview_zoom() - self.projection_rebuild_overview_zoom).abs()
-            > f64::EPSILON
+        // Band tiles track the overview zoom and each source's own overview, whose workspaces
+        // move and change while the overview is open, so rebuild on every frame then and while
+        // the zoom animates.
+        if self.layout.is_overview_open()
+            || (self.layout.overview_zoom() - self.projection_rebuild_overview_zoom).abs()
+                > f64::EPSILON
         {
             self.rebuild_projections();
         }
@@ -5544,17 +5697,17 @@ impl Niri {
                 }};
             }
 
+            // The band goes above the viewer's workspaces: input resolves the band first, and
+            // the viewer's windows scrolled off their workspace would otherwise be drawn over a
+            // band that takes their clicks.
+            self.render_overview_band(ctx.r(), output, push);
+
             for (ws, geo) in mon.workspaces_with_render_geo() {
                 let ns = Some(ws.id().get() as usize);
                 let xray_pos = XrayPos::new(geo.loc, zoom);
                 push_popups_from_layer!(Layer::Bottom, ns, xray_pos, process!(geo));
                 push_popups_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
             }
-
-            // Columns go above the viewer's workspaces: input resolves projections first, and
-            // the viewer's windows scrolled off their workspace would otherwise be drawn over a
-            // column that takes their clicks.
-            self.render_overview_projections(ctx.r(), output, push);
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
@@ -5585,68 +5738,107 @@ impl Niri {
         push(backdrop);
     }
 
-    /// Renders each source projected into `viewer`'s overview, scaled into its
-    /// column region.
-    fn render_overview_projections<R: NiriRenderer>(
+    /// Renders `viewer`'s overview band: labels and highlights on top, then the tiles, then
+    /// the opaque fill.
+    fn render_overview_band<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
         viewer: &Output,
         push: &mut dyn FnMut(OutputRenderElements<R>),
     ) {
-        // A virtual output never shows other outputs (FR-018). This also
-        // keeps the nested render of a source below from recursing.
+        // A virtual output never shows other outputs (FR-018).
         if is_virtual_output(viewer) {
             return;
         }
 
         let viewer_name = viewer.name();
+        let Some(band) = self
+            .projection_state
+            .bands
+            .iter()
+            .find(|band| band.viewer == viewer_name)
+        else {
+            return;
+        };
         let viewer_scale = viewer.current_scale().fractional_scale();
+
+        self.overview_band
+            .render_labels(ctx.renderer, band, viewer_scale, &mut |elem| {
+                push(elem.into())
+            });
+        self.overview_band
+            .render_highlights(band, &mut |elem| push(elem.into()));
+
         for projection in self
             .projection_state
             .projections
             .iter()
-            .filter(|p| p.kind == ProjectionKind::Overview && p.viewer == viewer_name)
+            .filter(|p| p.viewer == viewer_name)
         {
-            // rebuild_projections runs whenever outputs change, so a missing
-            // source only means this frame raced a removal.
-            let Some(source) = self
-                .layout
-                .outputs()
-                .find(|o| o.name() == projection.source)
-            else {
+            let ProjectionKind::Tile { workspace } = projection.kind else {
                 continue;
             };
-            if let Some(label) = self.overview_column_labels.render(
-                ctx.renderer,
-                &projection.source,
+            self.render_tile(ctx.r(), projection, workspace, band, viewer_scale, push);
+        }
+
+        if let Some(fill) = self.overview_band.render_fill(band) {
+            push(fill.into());
+        }
+    }
+
+    /// Renders the workspace `projection` shows, as the source's overview draws it, scaled
+    /// into the tile and cropped to the tile's part of the band.
+    fn render_tile<R: NiriRenderer>(
+        &self,
+        ctx: RenderCtx<R>,
+        projection: &Projection,
+        workspace: WorkspaceId,
+        band: &Band,
+        viewer_scale: f64,
+        push: &mut dyn FnMut(OutputRenderElements<R>),
+    ) {
+        // rebuild_projections runs whenever outputs change, so a missing source or workspace
+        // only means this frame raced a removal.
+        let Some(source) = self
+            .layout
+            .outputs()
+            .find(|o| o.name() == projection.source)
+        else {
+            return;
+        };
+        let Some(mon) = self.layout.monitor_for_output(source) else {
+            return;
+        };
+        let Some(ws_idx) = mon
+            .workspaces_with_render_geo_cull(false)
+            .position(|(ws, _)| ws.id() == workspace)
+        else {
+            debug!(
+                source = %projection.source,
+                ?workspace,
+                "overview band tile's workspace is gone"
+            );
+            return;
+        };
+        let Some(visible) = projection.region.intersection(band.rect) else {
+            return;
+        };
+        let crop = visible.to_physical_precise_round(viewer_scale);
+        let source_scale = source.current_scale().fractional_scale();
+        let focus_ring = !self.layout.interactive_move_is_moving_above_output(source);
+
+        mon.render_workspace_overview(ws_idx, ctx, focus_ring, &mut |elem| {
+            let elem = ProjectedElement::new(
+                OutputRenderElements::from(elem),
+                source_scale,
+                projection.source_rect,
                 viewer_scale,
                 projection.region,
-            ) {
-                push(label.into());
+            );
+            if let Some(elem) = CropRenderElement::from_element(elem, viewer_scale, crop) {
+                push(OutputRenderElements::Projected(elem));
             }
-
-            self.render_projected_source(ctx.r(), projection, source, viewer_scale, push);
-
-            match self
-                .overview_column_backings
-                .get(&(projection.viewer.clone(), projection.source.clone()))
-            {
-                Some(backing) => push(
-                    SolidColorRenderElement::from_buffer(
-                        backing,
-                        projection.region.loc,
-                        1.,
-                        Kind::Unspecified,
-                    )
-                    .into(),
-                ),
-                None => debug!(
-                    viewer = %projection.viewer,
-                    source = %projection.source,
-                    "overview column has no backing yet"
-                ),
-            }
-        }
+        });
     }
 
     /// The `View` projection `output` shows instead of its own workspaces.
@@ -8271,23 +8463,6 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
-}
-
-/// The area a monitor's overview workspaces span horizontally, over the
-/// monitor's full height, in its own logical coordinates.
-fn workspace_strip(mon: &Monitor<Mapped>) -> Option<Rectangle<f64, Logical>> {
-    let (left, right) = mon.workspaces_render_geo().fold(None, |extent, geo| {
-        let (l, r) = (geo.loc.x, geo.loc.x + geo.size.w);
-        Some(match extent {
-            None => (l, r),
-            Some((left, right)) => (f64::min(left, l), f64::max(right, r)),
-        })
-    })?;
-    let height = output_size(mon.output()).h;
-    Some(Rectangle::new(
-        Point::from((left, 0.)),
-        Size::from((right - left, height)),
-    ))
 }
 
 fn scale_relocate_crop<E: Element>(

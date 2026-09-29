@@ -1438,10 +1438,10 @@ impl<W: LayoutElement> Monitor<W> {
 
     /// Width of the output that the overview lays its workspaces out in.
     fn overview_area_width(&self) -> f64 {
-        let Some(progress) = &self.overview_progress else {
+        let Some(progress) = self.overview_clamped_progress() else {
             return self.view_size.w;
         };
-        let inset = self.overview_right_inset * progress.clamped_value().clamp(0., 1.);
+        let inset = self.overview_right_inset * progress;
         self.view_size.w - inset.min(self.view_size.w)
     }
 
@@ -1462,6 +1462,23 @@ impl<W: LayoutElement> Monitor<W> {
     #[cfg(test)]
     pub(super) fn overview_progress_value(&self) -> Option<f64> {
         self.overview_progress.as_ref().map(|p| p.value())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overview_right_inset(&self) -> f64 {
+        self.overview_right_inset
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overview_offscreen_reachable(&self) -> bool {
+        self.overview_offscreen_reachable
+    }
+
+    /// How far the overview is open, from 0 to 1, as the band and the right inset follow it.
+    pub fn overview_clamped_progress(&self) -> Option<f64> {
+        self.overview_progress
+            .as_ref()
+            .map(|p| p.clamped_value().clamp(0., 1.))
     }
 
     pub fn workspace_render_idx(&self) -> f64 {

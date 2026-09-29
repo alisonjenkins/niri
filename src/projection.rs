@@ -11,7 +11,6 @@ use crate::layout::workspace::WorkspaceId;
 /// Which layer of the compositor a projection is rendered into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionKind {
-    Overview,
     View,
     /// One workspace of a virtual output, shown as a tile in the overview band's column.
     Tile {
@@ -157,57 +156,6 @@ pub fn letterbox(
     let size = Size::from((source.w * scale, source.h * scale));
     let loc = Point::from(((viewer.w - size.w) / 2., (viewer.h - size.h) / 2.));
     Rectangle::new(loc, size)
-}
-
-/// Gap between the viewer strip and the first region, between consecutive
-/// regions, and after the last region, as a fraction of the viewer's height.
-const OVERVIEW_COLUMN_GAP_FRACTION: f64 = 0.05;
-/// Source regions are never shrunk below this fraction of their own size,
-/// even if that means overflowing the viewer.
-const OVERVIEW_MIN_SOURCE_SCALE: f64 = 0.05;
-
-/// Lays out `sources` as a row of regions to the right of `viewer_strip`,
-/// the rectangle where the viewer draws its own overview workspaces.
-///
-/// The strip itself is never moved or scaled. Regions start one gap right of
-/// the strip, one gap apart, centred vertically, at scale 1. If they do not
-/// fit before the viewer's right edge (keeping one gap of margin), all of
-/// them shrink by the same factor, down to [`OVERVIEW_MIN_SOURCE_SCALE`].
-/// When the strip already fills the viewer (overview closed, zoom 1) the
-/// regions lie fully off-screen to the right at scale 1.
-pub fn overview_columns(
-    viewer_strip: Rectangle<f64, Logical>,
-    viewer_size: Size<f64, Logical>,
-    sources: &[Size<f64, Logical>],
-) -> Vec<Rectangle<f64, Logical>> {
-    let gap = OVERVIEW_COLUMN_GAP_FRACTION * viewer_size.h;
-
-    let (start_x, source_scale) = if viewer_strip.size.w >= viewer_size.w {
-        (viewer_size.w, 1.)
-    } else {
-        let strip_right = viewer_strip.loc.x + viewer_strip.size.w;
-        let sources_width: f64 = sources.iter().map(|s| s.w).sum();
-        let gaps_and_margin = gap * (sources.len() as f64 + 1.);
-        let room = viewer_size.w - strip_right - gaps_and_margin;
-        let scale = if sources_width <= room || sources_width <= 0. {
-            1.
-        } else {
-            (room / sources_width).max(OVERVIEW_MIN_SOURCE_SCALE)
-        };
-        (strip_right, scale)
-    };
-
-    let mut cursor = start_x;
-    sources
-        .iter()
-        .map(|source| {
-            let size = Size::from((source.w * source_scale, source.h * source_scale));
-            cursor += gap;
-            let loc = Point::from((cursor, (viewer_size.h - size.h) / 2.));
-            cursor += size.w;
-            Rectangle::new(loc, size)
-        })
-        .collect()
 }
 
 /// Width of the overview band, as a fraction of the physical monitor's width, at full overview
@@ -434,11 +382,27 @@ pub fn scroll_to_show(
     new_scroll.clamp(0., max_scroll)
 }
 
+/// The band a physical monitor shows virtual outputs' workspaces in while the overview is open.
+#[derive(Debug, Clone)]
+pub struct Band {
+    pub viewer: String,
+    /// The part of the band on screen, local to the viewer; its width follows the overview
+    /// progress.
+    pub rect: Rectangle<f64, Logical>,
+    /// Laid out at the fully open band's width from `rect`'s left edge, so the column slides in
+    /// with the band instead of resizing on every frame of the animation.
+    pub column: ColumnLayout,
+    /// Sources left out of the column for an unusable size or no workspaces.
+    pub skipped: Vec<String>,
+}
+
 /// Which projections exist and which one, if any, is currently being viewed.
 #[derive(Debug, Default)]
 pub struct ProjectionState {
     pub projections: Vec<Projection>,
     pub viewing: Option<Viewing>,
+    /// At most one per physical monitor; none while locked or with no virtual output on.
+    pub bands: Vec<Band>,
 }
 
 /// A viewer currently viewing a source's projection.

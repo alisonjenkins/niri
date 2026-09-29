@@ -3087,6 +3087,8 @@ impl State {
 
                 // FIXME: granular.
                 self.niri.queue_redraw_all();
+            } else if self.niri.is_in_overview_band(pointer.current_location()) {
+                // The band's labels, gaps and background do nothing.
             } else if let Some(output) = self.niri.output_under_cursor() {
                 self.niri.layout.focus_output(&output);
 
