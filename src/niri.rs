@@ -3723,7 +3723,24 @@ impl Niri {
         if sources.is_empty() {
             return (Vec::new(), Vec::new());
         }
-        sources.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+        // Configuration order; outputs missing from the config go last, by name.
+        {
+            let config = self.config.borrow();
+            sources.sort_by_cached_key(|(mon, source)| {
+                let configured = mon
+                    .output()
+                    .user_data()
+                    .get::<OutputName>()
+                    .and_then(|name| {
+                        config
+                            .outputs
+                            .0
+                            .iter()
+                            .position(|output| name.matches(&output.name))
+                    });
+                (configured.unwrap_or(usize::MAX), source.name.clone())
+            });
+        }
         let column_sources: Vec<ColumnSource> = sources.iter().map(|(_, s)| s.clone()).collect();
 
         let mut projections = Vec::new();
