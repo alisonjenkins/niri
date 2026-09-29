@@ -529,6 +529,11 @@ mod fixture_tests {
 /// every caller other than `Niri::output_under` itself must go through it
 /// instead. This walks the source tree and fails if a new raw call sneaks
 /// in anywhere but the two allowed sites.
+///
+/// The opposite mistake, placing, wrapping or clamping the real cursor with
+/// a projected source's `global_space` geometry, has no textual signature to
+/// grep for. `input_tests` below catches it behaviourally by driving the real
+/// handlers and asserting the cursor stays on the viewer.
 #[test]
 fn global_space_output_under_is_used_only_in_niri_output_under_and_the_motion_clamp() {
     fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
