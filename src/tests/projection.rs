@@ -3704,3 +3704,177 @@ mod pick_color_tests {
         assert!(pick_at(&mut f, loc + Point::from((10., 540.))).is_some());
     }
 }
+
+mod workspace_overview_render_tests {
+    use smithay::backend::renderer::element::{Element as _, Id};
+    use smithay::backend::renderer::gles::GlesRenderer;
+    use smithay::output::Output;
+    use smithay::utils::{Physical, Rectangle, Scale};
+
+    use super::overview_tests::map_window_on;
+    use crate::layout::monitor::MonitorRenderElement;
+    use crate::render_helpers::{RenderCtx, RenderTarget};
+    use crate::tests::fixture::Fixture;
+
+    type Rendered = Vec<(Id, Rectangle<i32, Physical>)>;
+
+    enum Draw {
+        Workspace(usize),
+        Workspaces,
+        Shadows,
+    }
+
+    const OUTPUT_H: i32 = 1080;
+
+    /// Windows on workspaces 0, 1 and 2 and the overview open on workspace 0: workspaces 0 and
+    /// 1 are on the output, 2 and the empty last one are below it.
+    fn set_up() -> (Fixture, Output) {
+        let mut f = Fixture::new();
+        f.niri_state().backend.headless().add_renderer().unwrap();
+        f.add_output(1, (1920, 1080));
+        let output = f.niri_output(1);
+        let id = f.add_client();
+        for _ in 0..3 {
+            map_window_on(&mut f, id, &output, 300, 200);
+            f.niri().layout.switch_workspace_down();
+        }
+        f.niri().layout.switch_workspace(0);
+        f.niri().layout.toggle_overview();
+        f.niri_complete_animations();
+        (f, output)
+    }
+
+    fn render(f: &mut Fixture, output: &Output, draw: Draw) -> Rendered {
+        f.niri().update_render_elements(None);
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let state = f.niri_state();
+        let mon = state.niri.layout.monitor_for_output(output).unwrap();
+        let mut rendered = Vec::new();
+        state
+            .backend
+            .headless()
+            .with_primary_renderer(|renderer| {
+                let mut push = |elem: MonitorRenderElement<GlesRenderer>| {
+                    rendered.push((elem.id().clone(), elem.geometry(scale)));
+                };
+                let ctx = RenderCtx {
+                    renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                match draw {
+                    Draw::Workspace(idx) => {
+                        mon.render_workspace_overview(idx, ctx, true, &mut push)
+                    }
+                    Draw::Workspaces => mon.render_workspaces(ctx, true, &mut push),
+                    Draw::Shadows => mon.render_workspace_shadows(ctx.renderer, &mut push),
+                }
+            })
+            .unwrap();
+        rendered
+    }
+
+    /// The background element and physical geometry of each workspace, including offscreen ones.
+    fn backgrounds(f: &mut Fixture, output: &Output) -> Vec<(Id, Rectangle<i32, Physical>)> {
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let mon = f.niri().layout.monitor_for_output(output).unwrap();
+        mon.workspaces_with_render_geo_cull(false)
+            .map(|(ws, geo)| {
+                let id = ws.render_background().id().clone();
+                (id, geo.to_physical_precise_round(scale))
+            })
+            .collect()
+    }
+
+    /// Renders each workspace on its own, checking and dropping its background.
+    fn render_each(f: &mut Fixture, output: &Output) -> Vec<Rendered> {
+        let backgrounds = backgrounds(f, output);
+        backgrounds
+            .iter()
+            .enumerate()
+            .map(|(idx, background)| {
+                let mut rendered = render(f, output, Draw::Workspace(idx));
+                let count = rendered.len();
+                rendered.retain(|elem| elem != background);
+                assert_eq!(
+                    rendered.len(),
+                    count - 1,
+                    "workspace {idx} has one background"
+                );
+                rendered
+            })
+            .collect()
+    }
+
+    // Ids have interior mutability, so they cannot key a HashSet.
+    #[track_caller]
+    fn assert_same_elements(actual: &Rendered, expected: &Rendered) {
+        assert_eq!(actual.len(), expected.len(), "{actual:?} != {expected:?}");
+        for elem in actual {
+            assert!(
+                expected.contains(elem),
+                "{elem:?} missing from {expected:?}"
+            );
+        }
+        for elem in expected {
+            assert!(actual.contains(elem), "{elem:?} not rendered in {actual:?}");
+        }
+    }
+
+    #[test]
+    fn egl_render_workspace_overview_matches_the_overview_per_workspace() {
+        let (mut f, output) = set_up();
+
+        let mut whole = render(&mut f, &output, Draw::Workspaces);
+        whole.extend(render(&mut f, &output, Draw::Shadows));
+        let each = render_each(&mut f, &output);
+
+        // Only the on-screen workspaces are in the overview's own render.
+        let on_screen: Rendered = each[..2].concat();
+        assert!(!each[0].is_empty() && !each[1].is_empty());
+        assert_same_elements(&on_screen, &whole);
+    }
+
+    #[test]
+    fn egl_render_workspace_overview_matches_an_unculled_overview() {
+        let (mut f, output) = set_up();
+        f.niri()
+            .layout
+            .set_overview_offscreen_reachable(&output, true);
+
+        let mut whole = render(&mut f, &output, Draw::Workspaces);
+        whole.extend(render(&mut f, &output, Draw::Shadows));
+        let all: Rendered = render_each(&mut f, &output).concat();
+
+        assert_same_elements(&all, &whole);
+    }
+
+    #[test]
+    fn egl_render_workspace_overview_draws_an_offscreen_workspace_where_it_is() {
+        let (mut f, output) = set_up();
+
+        let whole = render(&mut f, &output, Draw::Workspaces);
+        let offscreen = render(&mut f, &output, Draw::Workspace(2));
+
+        assert!(!offscreen.is_empty());
+        for (id, geo) in &offscreen {
+            assert!(
+                whole.iter().all(|(on_output, _)| on_output != id),
+                "{id:?} is already on the output"
+            );
+            assert!(
+                geo.loc.y >= OUTPUT_H,
+                "{id:?} at {geo:?} is not below the output"
+            );
+        }
+    }
+
+    #[test]
+    fn egl_render_workspace_overview_invalid_index_draws_nothing() {
+        let (mut f, output) = set_up();
+
+        // Index 4 is one past the last workspace, where the overview still has geometry.
+        assert!(render(&mut f, &output, Draw::Workspace(4)).is_empty());
+        assert!(render(&mut f, &output, Draw::Workspace(usize::MAX)).is_empty());
+    }
+}
