@@ -6,11 +6,17 @@ use std::fmt;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::layout::workspace::WorkspaceId;
+
 /// Which layer of the compositor a projection is rendered into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionKind {
     Overview,
     View,
+    /// One workspace of a virtual output, shown as a tile in the overview band's column.
+    Tile {
+        workspace: WorkspaceId,
+    },
 }
 
 /// A mapping from a rectangle of a virtual output (the source) onto a region
@@ -202,6 +208,230 @@ pub fn overview_columns(
             Rectangle::new(loc, size)
         })
         .collect()
+}
+
+/// Width of the overview band, as a fraction of the physical monitor's width, at full overview
+/// progress.
+pub const BAND_FRACTION: f64 = 0.15;
+
+/// The band a physical monitor reserves at its right edge for virtual outputs' workspaces,
+/// while the overview is open.
+///
+/// Full height, right-aligned; width grows from 0 at `progress` 0 to `BAND_FRACTION` of
+/// `viewer_size.w` at `progress` 1. `progress` is clamped to `[0, 1]`; non-finite is treated
+/// as 0.
+pub fn band_rect(viewer_size: Size<f64, Logical>, progress: f64) -> Rectangle<f64, Logical> {
+    let progress = if progress.is_finite() {
+        progress.clamp(0., 1.)
+    } else {
+        0.
+    };
+    let width = BAND_FRACTION * viewer_size.w * progress;
+    let loc = Point::from((viewer_size.w - width, 0.));
+    Rectangle::new(loc, Size::from((width, viewer_size.h)))
+}
+
+/// A virtual output whose workspaces the column lists.
+#[derive(Debug, Clone)]
+pub struct ColumnSource {
+    pub name: String,
+    pub output_size: Size<f64, Logical>,
+    /// Number of workspaces, including the empty last one.
+    pub workspace_count: usize,
+    pub active_workspace: usize,
+}
+
+/// A source's name label plus its tiles, laid out in the band's column.
+#[derive(Debug, Clone)]
+pub struct GroupLayout {
+    /// Index of the source in the slice passed to [`column_layout`].
+    pub source: usize,
+    pub name: String,
+    pub label_rect: Rectangle<f64, Logical>,
+    pub tiles: Vec<TileLayout>,
+}
+
+/// One workspace's tile in the band's column.
+#[derive(Debug, Clone)]
+pub struct TileLayout {
+    /// Index of the owning group, same as [`GroupLayout::source`].
+    pub group: usize,
+    pub workspace: usize,
+    pub region: Rectangle<f64, Logical>,
+    pub active: bool,
+}
+
+/// Result of laying out a band's column.
+#[derive(Debug, Clone, Default)]
+pub struct ColumnLayout {
+    pub groups: Vec<GroupLayout>,
+    /// Total height of labels, tiles and gaps, before clamping or centring.
+    pub content_h: f64,
+    /// The scroll offset actually used, after clamping.
+    pub scroll: f64,
+    /// Indices into the `sources` slice that were skipped (bad size or no workspaces).
+    pub skipped: Vec<usize>,
+}
+
+/// Height of a group's name-label row, in logical pixels.
+const COLUMN_LABEL_HEIGHT: f64 = 24.;
+/// Horizontal margin on each side of a tile within the band, in logical pixels.
+const COLUMN_TILE_MARGIN: f64 = 8.;
+/// Extra vertical gap after a group's last tile, on top of the ordinary tile gap, so groups
+/// read as visually distinct from the workspaces within them.
+const COLUMN_GROUP_GAP: f64 = 2. * COLUMN_LABEL_HEIGHT;
+
+/// Lays out `sources` as a single scrollable column inside `band`: for each source, a label
+/// row followed by one tile per workspace, all at the same width (`band.size.w` minus
+/// `2 * COLUMN_TILE_MARGIN`), height following the source's aspect ratio. The gap between
+/// tiles within a group is niri's overview workspace-gap ratio, `0.1` of the tile height;
+/// groups are separated by that plus [`COLUMN_GROUP_GAP`].
+///
+/// Positions are in the viewer's logical coordinates inside `band`, offset by `-scroll` (and,
+/// when the content is shorter than the band, centred instead). `scroll` is clamped to
+/// `[0, max(0, content_h - band.size.h)]`; non-finite is treated as 0.
+///
+/// Sources with a zero, negative or non-finite size, or zero workspaces, are skipped; their
+/// indices are returned in `skipped` for the caller to log. A zero-width band gives an empty
+/// layout.
+pub fn column_layout(
+    band: Rectangle<f64, Logical>,
+    sources: &[ColumnSource],
+    scroll: f64,
+) -> ColumnLayout {
+    let tile_w = band.size.w - 2. * COLUMN_TILE_MARGIN;
+    if !(band.size.w > 0. && tile_w > 0.) {
+        return ColumnLayout {
+            skipped: (0..sources.len()).collect(),
+            ..Default::default()
+        };
+    }
+
+    let mut groups = Vec::new();
+    let mut skipped = Vec::new();
+    let mut y = 0.;
+
+    for (i, src) in sources.iter().enumerate() {
+        if !(src.output_size.w.is_finite()
+            && src.output_size.h.is_finite()
+            && src.output_size.w > 0.
+            && src.output_size.h > 0.)
+            || src.workspace_count == 0
+        {
+            skipped.push(i);
+            continue;
+        }
+
+        let tile_h = tile_w * src.output_size.h / src.output_size.w;
+        let tile_gap = 0.1 * tile_h;
+
+        let label_rect = Rectangle::new(
+            Point::from((band.loc.x, y)),
+            Size::from((band.size.w, COLUMN_LABEL_HEIGHT)),
+        );
+        y += COLUMN_LABEL_HEIGHT;
+
+        let mut tiles = Vec::with_capacity(src.workspace_count);
+        for ws in 0..src.workspace_count {
+            let region = Rectangle::new(
+                Point::from((band.loc.x + COLUMN_TILE_MARGIN, y)),
+                Size::from((tile_w, tile_h)),
+            );
+            tiles.push(TileLayout {
+                group: i,
+                workspace: ws,
+                region,
+                active: ws == src.active_workspace,
+            });
+            y += tile_h;
+            if ws + 1 < src.workspace_count {
+                y += tile_gap;
+            }
+        }
+
+        groups.push(GroupLayout {
+            source: i,
+            name: src.name.clone(),
+            label_rect,
+            tiles,
+        });
+
+        y += COLUMN_GROUP_GAP;
+    }
+    if !groups.is_empty() {
+        y -= COLUMN_GROUP_GAP;
+    }
+    let content_h = y.max(0.);
+
+    let offset = if content_h < band.size.h {
+        (band.size.h - content_h) / 2.
+    } else {
+        0.
+    };
+    let scroll = if content_h < band.size.h {
+        0.
+    } else if scroll.is_finite() {
+        scroll.clamp(0., (content_h - band.size.h).max(0.))
+    } else {
+        0.
+    };
+
+    let shift = offset - scroll;
+    for group in &mut groups {
+        group.label_rect.loc.y += shift;
+        for tile in &mut group.tiles {
+            tile.region.loc.y += shift;
+        }
+    }
+
+    ColumnLayout {
+        groups,
+        content_h,
+        scroll,
+        skipped,
+    }
+}
+
+/// The scroll offset, starting from `current_scroll`, that brings `target` (a `(source index,
+/// workspace index)` pair, matching [`GroupLayout::source`] / [`TileLayout::workspace`]) fully
+/// into `band`'s view, moving as little as possible. Returns `current_scroll` unchanged (after
+/// clamping) if `target` is already fully visible, or if it does not exist (an unknown or
+/// skipped source).
+pub fn scroll_to_show(
+    band: Rectangle<f64, Logical>,
+    sources: &[ColumnSource],
+    current_scroll: f64,
+    target: (usize, usize),
+) -> f64 {
+    let unscrolled = column_layout(band, sources, 0.);
+    let max_scroll = (unscrolled.content_h - band.size.h).max(0.);
+    let current = if current_scroll.is_finite() {
+        current_scroll.clamp(0., max_scroll)
+    } else {
+        0.
+    };
+
+    let Some(tile) = unscrolled
+        .groups
+        .iter()
+        .find(|g| g.source == target.0)
+        .and_then(|g| g.tiles.iter().find(|t| t.workspace == target.1))
+    else {
+        return current;
+    };
+
+    let top = tile.region.loc.y;
+    let bottom = top + tile.region.size.h;
+
+    let new_scroll = if top - current < 0. {
+        top
+    } else if bottom - current > band.size.h {
+        bottom - band.size.h
+    } else {
+        current
+    };
+
+    new_scroll.clamp(0., max_scroll)
 }
 
 /// Which projections exist and which one, if any, is currently being viewed.

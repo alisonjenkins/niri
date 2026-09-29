@@ -2,7 +2,10 @@
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::projection::{letterbox, overview_columns, Projection, ProjectionError, ProjectionKind};
+use crate::projection::{
+    band_rect, column_layout, letterbox, overview_columns, scroll_to_show, ColumnSource,
+    Projection, ProjectionError, ProjectionKind, BAND_FRACTION,
+};
 
 fn rect(x: f64, y: f64, w: f64, h: f64) -> Rectangle<f64, Logical> {
     Rectangle::new(Point::from((x, y)), Size::from((w, h)))
@@ -303,6 +306,256 @@ fn overview_columns_zoom_one_places_regions_off_screen() {
     for (r, source) in regions.iter().zip(&sources) {
         assert!(r.loc.x >= viewer_size.w, "{regions:?}");
         assert_eq!(r.size, *source);
+    }
+}
+
+mod band_tests {
+    use super::*;
+
+    #[test]
+    fn width_is_band_fraction_of_viewer_at_full_progress() {
+        let band = band_rect(size(2000., 1000.), 1.);
+
+        assert_eq!(band.size, size(2000. * BAND_FRACTION, 1000.));
+        assert_eq!(band.loc, Point::from((2000. - 2000. * BAND_FRACTION, 0.)));
+    }
+
+    #[test]
+    fn scales_linearly_with_progress() {
+        let band = band_rect(size(2000., 1000.), 0.5);
+
+        assert_eq!(band.size.w, 2000. * BAND_FRACTION * 0.5);
+        assert_eq!(band.size.h, 1000.);
+    }
+
+    #[test]
+    fn zero_width_at_progress_zero() {
+        let band = band_rect(size(2000., 1000.), 0.);
+
+        assert_eq!(band.size.w, 0.);
+        assert_eq!(band.loc.x, 2000.);
+    }
+
+    #[test]
+    fn progress_is_clamped_to_zero_one() {
+        let over = band_rect(size(2000., 1000.), 3.);
+        let under = band_rect(size(2000., 1000.), -3.);
+
+        assert_eq!(over, band_rect(size(2000., 1000.), 1.));
+        assert_eq!(under, band_rect(size(2000., 1000.), 0.));
+    }
+
+    #[test]
+    fn nan_progress_is_treated_as_zero() {
+        let band = band_rect(size(2000., 1000.), f64::NAN);
+
+        assert_eq!(band, band_rect(size(2000., 1000.), 0.));
+    }
+}
+
+mod column_layout_tests {
+    use super::*;
+
+    fn source(name: &str, w: f64, h: f64, count: usize, active: usize) -> ColumnSource {
+        ColumnSource {
+            name: name.to_string(),
+            output_size: size(w, h),
+            workspace_count: count,
+            active_workspace: active,
+        }
+    }
+
+    #[test]
+    fn groups_are_in_input_order() {
+        let band = rect(0., 0., 300., 2000.);
+        let sources = [
+            source("c", 1920., 1080., 1, 0),
+            source("a", 1920., 1080., 1, 0),
+            source("b", 1920., 1080., 1, 0),
+        ];
+
+        let layout = column_layout(band, &sources, 0.);
+
+        let names: Vec<&str> = layout.groups.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn tiles_are_equal_size_for_1_3_and_12_sources_of_the_same_aspect() {
+        let band = rect(0., 0., 300., 20000.);
+
+        let mut tile_sizes = Vec::new();
+        for count in [1, 3, 12] {
+            let sources: Vec<ColumnSource> = (0..count)
+                .map(|i| source(&format!("s{i}"), 1920., 1080., 1, 0))
+                .collect();
+            let layout = column_layout(band, &sources, 0.);
+            let sizes: Vec<Size<f64, Logical>> = layout
+                .groups
+                .iter()
+                .flat_map(|g| g.tiles.iter().map(|t| t.region.size))
+                .collect();
+            tile_sizes.push(sizes);
+        }
+
+        for sizes in &tile_sizes {
+            for size in sizes {
+                assert_eq!(*size, tile_sizes[0][0]);
+            }
+        }
+    }
+
+    #[test]
+    fn tiles_share_width_but_not_height_across_different_aspects() {
+        let band = rect(0., 0., 300., 2000.);
+        let sources = [
+            source("wide", 1920., 1080., 1, 0),
+            source("tall", 1080., 1920., 1, 0),
+        ];
+
+        let layout = column_layout(band, &sources, 0.);
+
+        let wide_tile = layout.groups[0].tiles[0].region;
+        let tall_tile = layout.groups[1].tiles[0].region;
+        assert_eq!(wide_tile.size.w, tall_tile.size.w);
+        assert_ne!(wide_tile.size.h, tall_tile.size.h);
+    }
+
+    #[test]
+    fn scroll_clamps_to_the_content_range() {
+        let band = rect(0., 0., 300., 200.);
+        let sources = [source("s", 1920., 1080., 5, 0)];
+
+        let below_zero = column_layout(band, &sources, -100.);
+        let above_max = column_layout(band, &sources, 1_000_000.);
+        let at_max = column_layout(band, &sources, above_max.content_h - band.size.h);
+
+        assert_eq!(below_zero.scroll, 0.);
+        assert_eq!(above_max.scroll, above_max.content_h - band.size.h);
+        assert_eq!(at_max.scroll, above_max.scroll);
+    }
+
+    #[test]
+    fn nan_scroll_is_zero() {
+        let band = rect(0., 0., 300., 200.);
+        let sources = [source("s", 1920., 1080., 5, 0)];
+
+        let layout = column_layout(band, &sources, f64::NAN);
+
+        assert_eq!(layout.scroll, 0.);
+    }
+
+    #[test]
+    fn short_content_is_centred_and_unscrolled() {
+        let band = rect(0., 0., 300., 20000.);
+        let sources = [source("s", 1920., 1080., 1, 0)];
+
+        let layout = column_layout(band, &sources, 500.);
+
+        assert_eq!(layout.scroll, 0.);
+        assert!(layout.content_h < band.size.h);
+        let expected_top = (band.size.h - layout.content_h) / 2.;
+        assert_eq!(layout.groups[0].label_rect.loc.y, expected_top);
+    }
+
+    fn nan_size_source() -> ColumnSource {
+        let mut src = source("nan-size", 1920., 1080., 1, 0);
+        // `Size::new` asserts on NaN, so build a valid size and corrupt it afterwards.
+        src.output_size.w = f64::NAN;
+        src
+    }
+
+    #[test]
+    fn sources_with_bad_size_or_no_workspaces_are_skipped() {
+        let band = rect(0., 0., 300., 2000.);
+        let sources = [
+            source("good", 1920., 1080., 1, 0),
+            source("zero-size", 0., 1080., 1, 0),
+            nan_size_source(),
+            source("no-workspaces", 1920., 1080., 0, 0),
+            source("also-good", 1920., 1080., 1, 0),
+        ];
+
+        let layout = column_layout(band, &sources, 0.);
+
+        assert_eq!(layout.skipped, vec![1, 2, 3]);
+        let names: Vec<&str> = layout.groups.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, vec!["good", "also-good"]);
+    }
+
+    #[test]
+    fn zero_width_band_is_an_empty_layout() {
+        let band = rect(0., 0., 0., 2000.);
+        let sources = [source("s", 1920., 1080., 1, 0)];
+
+        let layout = column_layout(band, &sources, 0.);
+
+        assert!(layout.groups.is_empty());
+        assert_eq!(layout.content_h, 0.);
+    }
+
+    #[test]
+    fn active_workspace_is_marked() {
+        let band = rect(0., 0., 300., 2000.);
+        let sources = [source("s", 1920., 1080., 3, 1)];
+
+        let layout = column_layout(band, &sources, 0.);
+
+        let active: Vec<bool> = layout.groups[0].tiles.iter().map(|t| t.active).collect();
+        assert_eq!(active, vec![false, true, false]);
+    }
+}
+
+mod scroll_to_show_tests {
+    use super::*;
+
+    fn source(name: &str, w: f64, h: f64, count: usize, active: usize) -> ColumnSource {
+        ColumnSource {
+            name: name.to_string(),
+            output_size: size(w, h),
+            workspace_count: count,
+            active_workspace: active,
+        }
+    }
+
+    #[test]
+    fn tile_already_in_view_keeps_the_current_scroll() {
+        let band = rect(0., 0., 300., 200.);
+        let sources = [source("s", 1920., 1080., 5, 0)];
+
+        let scroll = scroll_to_show(band, &sources, 0., (0, 0));
+
+        assert_eq!(scroll, 0.);
+    }
+
+    #[test]
+    fn tile_below_the_view_scrolls_down_to_its_bottom() {
+        let band = rect(0., 0., 300., 200.);
+        let sources = [source("s", 1920., 1080., 5, 0)];
+        let unscrolled = column_layout(band, &sources, 0.);
+        let last = unscrolled.groups[0].tiles.last().unwrap();
+        let expected = (last.region.loc.y + last.region.size.h - band.size.h)
+            .clamp(0., (unscrolled.content_h - band.size.h).max(0.));
+
+        let scroll = scroll_to_show(band, &sources, 0., (0, 4));
+
+        assert_eq!(scroll, expected);
+        assert!(scroll > 0.);
+    }
+
+    #[test]
+    fn tile_above_the_view_scrolls_up_to_its_top() {
+        let band = rect(0., 0., 300., 200.);
+        let sources = [source("s", 1920., 1080., 5, 0)];
+        let unscrolled = column_layout(band, &sources, 0.);
+        let max_scroll = (unscrolled.content_h - band.size.h).max(0.);
+        let first_tile_top = unscrolled.groups[0].tiles[0].region.loc.y;
+
+        let scrolled_down = scroll_to_show(band, &sources, 0., (0, 4));
+        let scroll_back_up = scroll_to_show(band, &sources, scrolled_down, (0, 0));
+
+        assert_eq!(scroll_back_up, first_tile_top);
+        assert!(scrolled_down > 0. && scrolled_down <= max_scroll);
     }
 }
 
