@@ -191,6 +191,7 @@ use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
 use crate::ui::overview_column_label::OverviewColumnLabels;
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
+use crate::ui::view_output_label::ViewOutputLabel;
 use crate::utils::scale::{closest_representable_scale, guess_monitor_scale};
 use crate::utils::spawning::{CHILD_DISPLAY, CHILD_ENV};
 use crate::utils::vblank_throttle::VBlankThrottle;
@@ -495,6 +496,9 @@ pub struct Niri {
 
     /// Source-name labels drawn above overview projection columns.
     overview_column_labels: OverviewColumnLabels,
+
+    /// "Viewing: <name>" and view-mode notices, drawn on the viewer.
+    pub view_output_label: ViewOutputLabel,
 }
 
 smithay::delegate_dispatch2!(State);
@@ -2727,6 +2731,7 @@ impl Niri {
         let window_mru_ui = WindowMruUi::new(config.clone());
         let config_error_notification =
             ConfigErrorNotification::new(animation_clock.clone(), config.clone());
+        let view_output_label = ViewOutputLabel::new(animation_clock.clone(), config.clone());
 
         let mut hotkey_overlay = HotkeyOverlay::new(config.clone(), mod_key);
         if !config_.hotkey_overlay.skip_at_startup {
@@ -2963,6 +2968,7 @@ impl Niri {
             projection_state: ProjectionState::default(),
             projection_rebuild_overview_zoom: 1.,
             overview_column_labels: OverviewColumnLabels::default(),
+            view_output_label,
         };
 
         niri.reset_pointer_inactivity_timer();
@@ -3406,7 +3412,7 @@ impl Niri {
                     "stopped viewing output"
                 );
                 self.projection_state.viewing = None;
-                self.on_viewing_lost(&viewing);
+                self.on_viewing_lost(&viewing, reason);
             }
         }
 
@@ -3482,6 +3488,8 @@ impl Niri {
         });
         self.rebuild_projections();
         self.layout.focus_output(&source);
+        self.view_output_label
+            .show(&viewer_name, format!("Viewing: {name}"));
         self.queue_redraw(&viewer);
 
         Ok(ViewOutputState::Viewing {
@@ -3535,9 +3543,10 @@ impl Niri {
 
     /// Hands focus back after view mode ended on its own (FR-015).
     ///
-    /// If the viewer survives it becomes active again. If the viewer is
-    /// gone the layout has already moved its focus, so nothing changes.
-    fn on_viewing_lost(&mut self, viewing: &Viewing) {
+    /// If the viewer survives it becomes active again and says why view mode
+    /// ended. If the viewer is gone the layout has already moved its focus
+    /// and there is nowhere to say it, so nothing changes.
+    fn on_viewing_lost(&mut self, viewing: &Viewing, reason: &str) {
         let Some(viewer) = self
             .layout
             .outputs()
@@ -3547,6 +3556,10 @@ impl Niri {
             return;
         };
         self.layout.focus_output(&viewer);
+        self.view_output_label.show(
+            &viewing.viewer,
+            format!("Stopped viewing {}: {reason}", viewing.source),
+        );
         self.queue_redraw(&viewer);
     }
 
@@ -4816,6 +4829,7 @@ impl Niri {
 
         self.layout.advance_animations();
         self.config_error_notification.advance_animations();
+        self.view_output_label.advance_animations();
         self.exit_confirm_dialog.advance_animations();
         self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
@@ -5045,6 +5059,11 @@ impl Niri {
             push(backdrop);
 
             return;
+        }
+
+        // After the lock screen, which must not show which output is viewed.
+        if let Some(element) = self.view_output_label.render(ctx.renderer, output) {
+            push(element.into());
         }
 
         // Draw the hotkey overlay on top.
@@ -5428,6 +5447,8 @@ impl Niri {
             state.unfinished_animations_remain = self.layout.are_animations_ongoing(Some(output));
             state.unfinished_animations_remain |=
                 self.config_error_notification.are_animations_ongoing();
+            state.unfinished_animations_remain |=
+                self.view_output_label.text_on(&output.name()).is_some();
             state.unfinished_animations_remain |= self.exit_confirm_dialog.are_animations_ongoing();
             state.unfinished_animations_remain |= self.screenshot_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();

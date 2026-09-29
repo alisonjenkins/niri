@@ -1296,6 +1296,38 @@ mod view_tests {
     }
 
     #[test]
+    fn starting_shows_the_viewing_label_on_the_viewer_only() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+
+        f.niri().start_viewing("steam").unwrap();
+
+        let label = &f.niri().view_output_label;
+        assert_eq!(label.text_on(&viewer.name()), Some("Viewing: steam"));
+        assert_eq!(label.text_on("steam"), None);
+    }
+
+    #[test]
+    fn losing_the_source_shows_why_on_the_viewer() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        start(&mut f, "steam");
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .remove_virtual_output(&mut state.niri, "steam")
+            .unwrap();
+
+        let text = f.niri().view_output_label.text_on(&viewer.name());
+        assert_eq!(
+            text,
+            Some("Stopped viewing steam: source output no longer present")
+        );
+    }
+
+    #[test]
     fn viewing_without_a_physical_output_fails() {
         let mut f = Fixture::new();
         let state = f.niri_state();
