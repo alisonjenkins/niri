@@ -1138,10 +1138,13 @@ impl State {
         let rect = monitor.active_window_visual_rectangle();
 
         if let Some(rect) = rect {
-            let output_geo = self.niri.global_space.output_geometry(output).unwrap();
-            let mut rect = rect;
-            rect.loc += output_geo.loc.to_f64();
-            rv = self.move_cursor_to_rect(rect, mode);
+            match self.niri.cursor_rect_for(output, rect) {
+                Some(rect) => rv = self.move_cursor_to_rect(rect, mode),
+                None => debug!(
+                    output = %output.name(),
+                    "not warping to focus: the output is not shown where the cursor can go"
+                ),
+            }
         }
 
         rv
@@ -3734,6 +3737,59 @@ impl Niri {
                 .is_some()
         });
         under
+    }
+
+    /// Where the real cursor must go to reach `rect`, given local to `output`.
+    ///
+    /// A virtual output the cursor is not physically on is only reachable through a
+    /// projection, preferring one on the monitor under the cursor, and the result is clipped
+    /// to that projection's region on the viewer. `None` means the cursor cannot reach `rect` at
+    /// all.
+    pub fn cursor_rect_for(
+        &self,
+        output: &Output,
+        rect: Rectangle<f64, Logical>,
+    ) -> Option<Rectangle<f64, Logical>> {
+        if !is_virtual_output(output) || self.pointer_is_over(output) {
+            let output_geo = self.global_space.output_geometry(output)?;
+            return Some(Rectangle::new(
+                rect.loc + output_geo.loc.to_f64(),
+                rect.size,
+            ));
+        }
+
+        let source = output.name();
+        let viewer_under_pointer = self
+            .seat
+            .get_pointer()
+            .and_then(|pointer| self.physical_output_under(pointer.current_location()))
+            .map(|(viewer, _)| viewer.name());
+        let mut projections = self
+            .projection_state
+            .projections
+            .iter()
+            .filter(|p| p.source == source);
+        let projection = projections
+            .clone()
+            .find(|p| Some(&p.viewer) == viewer_under_pointer.as_ref())
+            .or_else(|| projections.next())?;
+
+        let viewer = self
+            .global_space
+            .outputs()
+            .find(|o| o.name() == projection.viewer)?;
+        let viewer_geo = self.global_space.output_geometry(viewer)?.to_f64();
+        let region = Rectangle::new(
+            projection.region.loc + viewer_geo.loc,
+            projection.region.size,
+        );
+        let projected = Rectangle::new(
+            projection.to_viewer(rect.loc) + viewer_geo.loc,
+            rect.size.upscale(projection.scale()),
+        );
+        projected
+            .intersection(region)
+            .and_then(|rect| rect.intersection(viewer_geo))
     }
 
     /// The output a global position physically lies on, ignoring projections.

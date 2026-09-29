@@ -1881,3 +1881,108 @@ mod view_render_tests {
             .any(|e| matches!(e, OutputRenderElements::Texture(_))));
     }
 }
+
+/// Input driven through the real handlers (`do_action`, `process_input_event`) while a
+/// projection is up. The real cursor must stay on the physical output it is on: a virtual
+/// output's global-space geometry never places, wraps, clamps or offsets it.
+mod input_tests {
+    use niri_config::input::{WarpMouseToFocus, WarpMouseToFocusMode};
+    use niri_config::{Action, Config};
+    use smithay::output::Output;
+    use smithay::utils::{Logical, Point, Rectangle};
+
+    use super::overview_tests::{map_window_on, output_named, window_center_on};
+    use crate::projection::{Projection, ProjectionKind};
+    use crate::tests::fixture::Fixture;
+
+    fn set_up_with(config: Config, viewer: (u16, u16), sources: &[(&str, u16, u16)]) -> Fixture {
+        let mut f = Fixture::with_config(config);
+        f.add_output(1, viewer);
+        for (name, w, h) in sources {
+            let state = f.niri_state();
+            state
+                .backend
+                .headless()
+                .create_virtual_output(&mut state.niri, *w, *h, 60, Some(name.to_string()))
+                .unwrap();
+        }
+        f
+    }
+
+    fn geometry(f: &mut Fixture, output: &Output) -> Rectangle<f64, Logical> {
+        f.niri()
+            .global_space
+            .output_geometry(output)
+            .unwrap()
+            .to_f64()
+    }
+
+    fn view_projection(f: &mut Fixture) -> Projection {
+        f.niri()
+            .projection_state
+            .projections
+            .iter()
+            .find(|p| p.kind == ProjectionKind::View)
+            .unwrap()
+            .clone()
+    }
+
+    fn pointer(f: &mut Fixture) -> Point<f64, Logical> {
+        f.niri().seat.get_pointer().unwrap().current_location()
+    }
+
+    fn warp_config() -> Config {
+        let mut config = Config::default();
+        config.input.warp_mouse_to_focus = Some(WarpMouseToFocus {
+            mode: Some(WarpMouseToFocusMode::CenterXyAlways),
+        });
+        config
+    }
+
+    #[test]
+    fn warp_to_focus_in_view_mode_lands_on_the_viewer_over_the_focused_window() {
+        let mut f = set_up_with(warp_config(), (1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let left = map_window_on(&mut f, id, &steam, 300, 300);
+        map_window_on(&mut f, id, &steam, 300, 300);
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        f.niri_state().move_cursor(Point::from((960., 540.)));
+        f.niri_state().update_keyboard_focus();
+
+        f.niri_state().do_action(Action::FocusColumnLeft, false);
+        f.niri_complete_animations();
+
+        let viewer_geo = geometry(&mut f, &viewer);
+        let p = pointer(&mut f);
+        assert!(
+            viewer_geo.contains(p),
+            "pointer {p:?} left the viewer {viewer_geo:?}"
+        );
+        let projection = view_projection(&mut f);
+        let expected =
+            projection.to_viewer(window_center_on(f.niri(), &steam, &left)) + viewer_geo.loc;
+        assert!(
+            (p.x - expected.x).abs() <= 1. && (p.y - expected.y).abs() <= 1.,
+            "pointer {p:?} is not over the focused window's centre {expected:?}"
+        );
+    }
+
+    #[test]
+    fn warp_to_focus_on_an_unprojected_virtual_output_leaves_the_pointer() {
+        let mut f = set_up_with(warp_config(), (1920, 1080), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        map_window_on(&mut f, id, &steam, 300, 300);
+        map_window_on(&mut f, id, &steam, 300, 300);
+        f.niri_state().move_cursor(Point::from((960., 540.)));
+        f.niri().layout.focus_output(&steam);
+        f.niri_state().update_keyboard_focus();
+
+        f.niri_state().do_action(Action::FocusColumnLeft, false);
+
+        assert_eq!(pointer(&mut f), Point::from((960., 540.)));
+    }
+}
