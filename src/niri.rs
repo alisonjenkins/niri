@@ -4983,6 +4983,31 @@ impl Niri {
     }
 
     pub fn update_render_elements(&mut self, output: Option<&Output>) {
+        self.update_output_render_elements(output);
+
+        // A viewer renders the sources it projects inside its own frame, so they must be as
+        // up to date as the viewer itself.
+        if let Some(viewer) = output {
+            let viewer_name = viewer.name();
+            let sources: Vec<Output> = self
+                .layout
+                .outputs()
+                .filter(|source| {
+                    let source_name = source.name();
+                    self.projection_state
+                        .projections
+                        .iter()
+                        .any(|p| p.viewer == viewer_name && p.source == source_name)
+                })
+                .cloned()
+                .collect();
+            for source in &sources {
+                self.update_output_render_elements(Some(source));
+            }
+        }
+    }
+
+    fn update_output_render_elements(&mut self, output: Option<&Output>) {
         self.update_xray_render_elements(output);
         self.layout.update_render_elements(output);
 
