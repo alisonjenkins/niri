@@ -15,7 +15,7 @@ use smithay::backend::input::{
     InputEvent, KeyState, KeyboardKeyEvent, Keycode, MouseButton, PointerAxisEvent,
     PointerButtonEvent, PointerMotionEvent, ProximityState, Switch, SwitchState, SwitchToggleEvent,
     TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent, TabletToolTipEvent,
-    TabletToolTipState, TouchEvent,
+    TabletToolTipState, TouchEvent, TouchSlot,
 };
 use smithay::backend::libinput::LibinputInputBackend;
 use smithay::input::dnd::DnDGrab;
@@ -3102,29 +3102,7 @@ impl State {
 
         if button == Some(MouseButton::Left) && self.niri.screenshot_ui.is_open() {
             if button_state == ButtonState::Pressed {
-                let pos = pointer.current_location();
-
-                // If we'll be moving the existing selection, use the selection output.
-                let output = if mod_down {
-                    self.niri.screenshot_ui.selection_output()
-                } else {
-                    self.niri.output_under(pos).map(|(out, _)| out)
-                };
-
-                if let Some(output) = output.cloned() {
-                    let geom = self.niri.global_space.output_geometry(&output).unwrap();
-                    let point = (pos - geom.loc.to_f64())
-                        .to_physical(output.current_scale().fractional_scale())
-                        .to_i32_round();
-
-                    if self
-                        .niri
-                        .screenshot_ui
-                        .pointer_down(output, point, None, mod_down)
-                    {
-                        self.niri.queue_redraw_all();
-                    }
-                }
+                self.screenshot_ui_pointer_down(pointer.current_location(), None, mod_down);
             } else if let Some(capture) = self.niri.screenshot_ui.pointer_up(None) {
                 if capture {
                     self.confirm_screenshot(true);
@@ -3732,27 +3710,7 @@ impl State {
                     let mod_down = modifiers.contains(mod_key.to_modifiers());
 
                     if self.niri.screenshot_ui.is_open() {
-                        // If we'll be moving the existing selection, use the selection output.
-                        let output = if mod_down {
-                            self.niri.screenshot_ui.selection_output()
-                        } else {
-                            under.output.as_ref()
-                        };
-
-                        if let Some(output) = output.cloned() {
-                            let geom = self.niri.global_space.output_geometry(&output).unwrap();
-                            let point = (pos - geom.loc.to_f64())
-                                .to_physical(output.current_scale().fractional_scale())
-                                .to_i32_round();
-
-                            if self
-                                .niri
-                                .screenshot_ui
-                                .pointer_down(output, point, None, mod_down)
-                            {
-                                self.niri.queue_redraw_all();
-                            }
-                        }
+                        self.screenshot_ui_pointer_down(pos, None, mod_down);
                     } else if self.niri.window_mru_ui.is_open() {
                         let id = self
                             .niri
@@ -4319,6 +4277,42 @@ impl State {
         )
     }
 
+    /// Starts a screenshot UI selection, or a move of the existing one when `move_existing`, at
+    /// the global `pos` of a pointer, tablet tool or touch point.
+    fn screenshot_ui_pointer_down(
+        &mut self,
+        pos: Point<f64, Logical>,
+        slot: Option<TouchSlot>,
+        move_existing: bool,
+    ) {
+        // The screenshot UI is drawn on every physical output and never inside a projection.
+        let output = if move_existing {
+            self.niri.screenshot_ui.selection_output()
+        } else {
+            self.niri
+                .physical_output_under(pos)
+                .map(|(output, _)| output)
+        };
+        let Some(output) = output.cloned() else {
+            return;
+        };
+        let Some(geom) = self.niri.global_space.output_geometry(&output) else {
+            debug!(output = %output.name(), "screenshot UI output has no geometry in global_space");
+            return;
+        };
+        let point = (pos - geom.loc.to_f64())
+            .to_physical(output.current_scale().fractional_scale())
+            .to_i32_round();
+
+        if self
+            .niri
+            .screenshot_ui
+            .pointer_down(output, point, slot, move_existing)
+        {
+            self.niri.queue_redraw_all();
+        }
+    }
+
     /// Computes the cursor position for the touch event.
     ///
     /// This function handles the touch output mapping, as well as coordinate transform
@@ -4348,27 +4342,7 @@ impl State {
         let mod_down = mods.contains(mod_key.to_modifiers());
 
         if self.niri.screenshot_ui.is_open() {
-            // If we'll be moving the existing selection, use the selection output.
-            let output = if mod_down {
-                self.niri.screenshot_ui.selection_output()
-            } else {
-                under.output.as_ref()
-            };
-
-            if let Some(output) = output.cloned() {
-                let geom = self.niri.global_space.output_geometry(&output).unwrap();
-                let point = (pos - geom.loc.to_f64())
-                    .to_physical(output.current_scale().fractional_scale())
-                    .to_i32_round();
-
-                if self
-                    .niri
-                    .screenshot_ui
-                    .pointer_down(output, point, Some(slot), mod_down)
-                {
-                    self.niri.queue_redraw_all();
-                }
-            }
+            self.screenshot_ui_pointer_down(pos, Some(slot), mod_down);
         } else if self.niri.window_mru_ui.is_open() {
             let id = self
                 .niri

@@ -3942,7 +3942,10 @@ impl Niri {
     }
 
     /// The output a global position physically lies on, ignoring projections.
-    fn physical_output_under(
+    ///
+    /// UI drawn over each physical output instead of its content, such as the screenshot UI,
+    /// resolves pointer input with this: a projection never draws it.
+    pub fn physical_output_under(
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(&Output, Point<f64, Logical>)> {

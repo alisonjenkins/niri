@@ -789,6 +789,19 @@ impl ScreenshotUi {
         }
     }
 
+    #[cfg(test)]
+    pub fn selection(&self) -> Option<(&Output, Rectangle<i32, Physical>)> {
+        if let Self::Open {
+            selection: (output, a, b),
+            ..
+        } = self
+        {
+            Some((output, rect_from_corner_points(*a, *b)))
+        } else {
+            None
+        }
+    }
+
     pub fn output_size(&self, output: &Output) -> Option<(Size<i32, Physical>, f64, Transform)> {
         if let Self::Open { output_data, .. } = self {
             let data = output_data.get(output)?;

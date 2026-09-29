@@ -2791,3 +2791,156 @@ mod input_tests {
         );
     }
 }
+
+/// The screenshot UI while a virtual output is projected: it is drawn on each physical
+/// output, so a drag on the viewer must select on the viewer, never on the source it shows.
+mod screenshot_tests {
+    use niri_config::Action;
+    use smithay::output::Output;
+    use smithay::utils::{Logical, Physical, Point, Rectangle};
+
+    use super::overview_tests::{map_window_on, output_named};
+    use crate::projection::ProjectionKind;
+    use crate::tests::fixture::Fixture;
+    use crate::tests::input;
+
+    /// A viewer with a window of its own and a 1280x800 `steam` with a window on it.
+    fn set_up(viewer_size: (u16, u16)) -> (Fixture, Output) {
+        let mut f = Fixture::new();
+        f.niri_state().backend.headless().add_renderer().unwrap();
+        f.add_output(1, viewer_size);
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        map_window_on(&mut f, id, &steam, 300, 200);
+        map_window_on(&mut f, id, &viewer, 300, 200);
+        f.niri().layout.focus_output(&viewer);
+        (f, viewer)
+    }
+
+    fn viewer_loc(f: &mut Fixture, viewer: &Output) -> Point<f64, Logical> {
+        f.niri()
+            .global_space
+            .output_geometry(viewer)
+            .unwrap()
+            .loc
+            .to_f64()
+    }
+
+    fn region_of(f: &mut Fixture, kind: ProjectionKind) -> Rectangle<f64, Logical> {
+        f.niri()
+            .projection_state
+            .projections
+            .iter()
+            .find(|p| p.kind == kind && p.source == "steam")
+            .unwrap()
+            .region
+    }
+
+    fn open_screenshot_ui(f: &mut Fixture) {
+        f.niri_state()
+            .do_action(Action::Screenshot(true, None), false);
+        assert!(f.niri().screenshot_ui.is_open());
+    }
+
+    fn selection(f: &mut Fixture) -> (String, Rectangle<i32, Physical>) {
+        let (output, rect) = f.niri().screenshot_ui.selection().unwrap();
+        (output.name(), rect)
+    }
+
+    /// Presses at `start` (viewer-local), drags by `delta` and releases; returns the
+    /// selection the drag is expected to make on a scale-1 viewer.
+    fn drag(
+        f: &mut Fixture,
+        viewer: &Output,
+        start: Point<f64, Logical>,
+        delta: (f64, f64),
+    ) -> Rectangle<i32, Physical> {
+        assert_eq!(viewer.current_scale().fractional_scale(), 1.);
+        let loc = viewer_loc(f, viewer);
+        f.niri_state().move_cursor(start + loc);
+        input::pointer_button(f, input::BTN_LEFT, true);
+        input::pointer_motion(f, delta);
+        input::pointer_button(f, input::BTN_LEFT, false);
+        let start = start.to_physical(1.).to_i32_round::<i32>();
+        // Selections include both corner pixels.
+        Rectangle::new(start, (delta.0 as i32 + 1, delta.1 as i32 + 1).into())
+    }
+
+    #[test]
+    fn egl_dragging_in_the_screenshot_ui_in_view_mode_selects_on_the_viewer() {
+        let (mut f, viewer) = set_up((1920, 1080));
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        let region = region_of(&mut f, ProjectionKind::View);
+        open_screenshot_ui(&mut f);
+
+        let start = region.loc + Point::from((200., 100.));
+        let expected = drag(&mut f, &viewer, start, (400., 300.));
+
+        assert!(f.niri().screenshot_ui.is_open());
+        assert_eq!(
+            selection(&mut f),
+            (viewer.name(), expected),
+            "the drag should select on the viewer the screenshot UI is drawn on"
+        );
+    }
+
+    #[test]
+    fn egl_dragging_in_the_screenshot_ui_without_projections_selects_under_the_pointer() {
+        let (mut f, viewer) = set_up((1920, 1080));
+        assert!(f.niri().projection_state.projections.is_empty());
+        open_screenshot_ui(&mut f);
+
+        let expected = drag(&mut f, &viewer, Point::from((300., 200.)), (400., 300.));
+
+        assert_eq!(selection(&mut f), (viewer.name(), expected));
+    }
+
+    #[test]
+    fn egl_dragging_in_the_screenshot_ui_over_an_overview_column_selects_on_the_viewer() {
+        let (mut f, viewer) = set_up((5120, 1440));
+        f.niri().layout.toggle_overview();
+        f.niri_complete_animations();
+        assert!(f.niri().layout.is_overview_open());
+        let region = region_of(&mut f, ProjectionKind::Overview);
+        open_screenshot_ui(&mut f);
+
+        let start = region.loc + region.size.downscale(2.).to_point();
+        let expected = drag(&mut f, &viewer, start, (50., 40.));
+
+        assert_eq!(
+            selection(&mut f),
+            (viewer.name(), expected),
+            "the drag should select on the viewer, not in the projected column's source"
+        );
+    }
+
+    #[test]
+    fn egl_tapping_in_the_screenshot_ui_in_view_mode_selects_on_the_viewer() {
+        let (mut f, viewer) = set_up((1920, 1080));
+        input::add_device(&mut f);
+        f.niri().config.borrow_mut().input.touch.map_to_output = Some(viewer.name());
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        let region = region_of(&mut f, ProjectionKind::View);
+        open_screenshot_ui(&mut f);
+
+        let tap = region.loc + Point::from((200., 100.));
+        input::touch_tap(&mut f, (tap.x / 1920., tap.y / 1080.));
+
+        // A tap selects the default 32x32 square centred on it.
+        let loc = tap.to_physical(1.).to_i32_round::<i32>() - Point::from((16, 16));
+        assert_eq!(
+            selection(&mut f),
+            (viewer.name(), Rectangle::new(loc, (32, 32).into())),
+            "the tap should select on the viewer the screenshot UI is drawn on"
+        );
+    }
+}
