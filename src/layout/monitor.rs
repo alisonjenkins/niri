@@ -1744,6 +1744,15 @@ impl<W: LayoutElement> Monitor<W> {
         ws.render_above_top_layer()
     }
 
+    /// Where this monitor shows an interactive move's insert hint: `Some(Some(id))` on
+    /// workspace `id`, `Some(None)` between workspaces, `None` nowhere.
+    #[cfg(test)]
+    pub fn insert_hint_workspace(&self) -> Option<Option<WorkspaceId>> {
+        self.insert_hint
+            .as_ref()
+            .map(|hint| hint.workspace.existing_id())
+    }
+
     pub fn render_insert_hint_between_workspaces<R: NiriRenderer>(
         &self,
         renderer: &mut R,
