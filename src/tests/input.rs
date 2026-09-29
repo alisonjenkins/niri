@@ -4,8 +4,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use smithay::backend::input::{
-    ButtonState, Device, DeviceCapability, Event, InputBackend, InputEvent, InputTime, KeyState,
-    Keycode, PointerButtonEvent, PointerMotionEvent, UnusedEvent,
+    AbsolutePositionEvent, ButtonState, Device, DeviceCapability, Event, InputBackend, InputEvent,
+    InputTime, KeyState, Keycode, PointerButtonEvent, PointerMotionEvent, TouchDownEvent,
+    TouchEvent, TouchFrameEvent, TouchSlot, TouchUpEvent, UnusedEvent,
 };
 use smithay::input::keyboard::FilterResult;
 use smithay::output::Output;
@@ -35,7 +36,10 @@ impl Device for TestDevice {
     }
 
     fn has_capability(&self, capability: DeviceCapability) -> bool {
-        matches!(capability, DeviceCapability::Pointer)
+        matches!(
+            capability,
+            DeviceCapability::Pointer | DeviceCapability::Touch
+        )
     }
 
     fn usb_id(&self) -> Option<(u32, u32)> {
@@ -61,6 +65,9 @@ pub struct TestEvent {
     delta: Point<f64, Logical>,
     button: u32,
     pressed: bool,
+    slot: Option<u32>,
+    /// Absolute position as a fraction of the touch output's size.
+    fraction: (f64, f64),
 }
 
 impl Event<TestInput> for TestEvent {
@@ -105,6 +112,34 @@ impl PointerButtonEvent<TestInput> for TestEvent {
     }
 }
 
+impl AbsolutePositionEvent<TestInput> for TestEvent {
+    fn x(&self) -> f64 {
+        self.fraction.0
+    }
+
+    fn y(&self) -> f64 {
+        self.fraction.1
+    }
+
+    fn x_transformed(&self, width: i32) -> f64 {
+        self.fraction.0 * f64::from(width)
+    }
+
+    fn y_transformed(&self, height: i32) -> f64 {
+        self.fraction.1 * f64::from(height)
+    }
+}
+
+impl TouchEvent<TestInput> for TestEvent {
+    fn slot(&self) -> TouchSlot {
+        TouchSlot::from(self.slot)
+    }
+}
+
+impl TouchDownEvent<TestInput> for TestEvent {}
+impl TouchUpEvent<TestInput> for TestEvent {}
+impl TouchFrameEvent<TestInput> for TestEvent {}
+
 impl InputBackend for TestInput {
     type Device = TestDevice;
     type KeyboardKeyEvent = UnusedEvent;
@@ -120,11 +155,11 @@ impl InputBackend for TestInput {
     type GesturePinchEndEvent = UnusedEvent;
     type GestureHoldBeginEvent = UnusedEvent;
     type GestureHoldEndEvent = UnusedEvent;
-    type TouchDownEvent = UnusedEvent;
-    type TouchUpEvent = UnusedEvent;
+    type TouchDownEvent = TestEvent;
+    type TouchUpEvent = TestEvent;
     type TouchMotionEvent = UnusedEvent;
     type TouchCancelEvent = UnusedEvent;
-    type TouchFrameEvent = UnusedEvent;
+    type TouchFrameEvent = TestEvent;
     type TabletToolAxisEvent = UnusedEvent;
     type TabletToolProximityEvent = UnusedEvent;
     type TabletToolTipEvent = UnusedEvent;
@@ -187,4 +222,26 @@ pub fn pointer_button(f: &mut Fixture, button: u32, pressed: bool) {
         ..event()
     };
     send(f, InputEvent::PointerButton { event });
+}
+
+/// Registers the test device, which gives the seat touch capability.
+pub fn add_device(f: &mut Fixture) {
+    send(f, InputEvent::DeviceAdded { device: TestDevice });
+}
+
+/// A touch tap at `fraction` of the touch output's size.
+pub fn touch_tap(f: &mut Fixture, fraction: (f64, f64)) {
+    let down = TestEvent {
+        slot: Some(0),
+        fraction,
+        ..event()
+    };
+    send(f, InputEvent::TouchDown { event: down });
+    send(f, InputEvent::TouchFrame { event: event() });
+    let up = TestEvent {
+        slot: Some(0),
+        ..event()
+    };
+    send(f, InputEvent::TouchUp { event: up });
+    send(f, InputEvent::TouchFrame { event: event() });
 }

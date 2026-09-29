@@ -1480,7 +1480,7 @@ mod view_tests {
         let (ws_id, active) = workspace_on(&mut f, &steam, 1);
         assert!(!active);
 
-        f.niri().activate_overview_workspace(&steam, ws_id);
+        f.niri().activate_overview_workspace(&steam, ws_id, &viewer);
         f.niri_complete_animations();
 
         assert!(!f.niri().layout.is_overview_open());
@@ -1505,7 +1505,8 @@ mod view_tests {
         let (ws_id, active) = workspace_on(&mut f, &viewer, 1);
         assert!(!active);
 
-        f.niri().activate_overview_workspace(&viewer, ws_id);
+        f.niri()
+            .activate_overview_workspace(&viewer, ws_id, &viewer);
         f.niri_complete_animations();
 
         assert!(!f.niri().layout.is_overview_open());
@@ -1524,7 +1525,8 @@ mod view_tests {
         open_overview(&mut f);
         let (ws_id, _) = workspace_on(&mut f, &viewer, 1);
 
-        f.niri().activate_overview_workspace(&viewer, ws_id);
+        f.niri()
+            .activate_overview_workspace(&viewer, ws_id, &viewer);
         f.niri_complete_animations();
 
         assert_eq!(viewing(&mut f), None);
@@ -2079,6 +2081,55 @@ mod input_tests {
         assert!(
             (grown - 100).abs() <= 1,
             "a 135 px drag at scale 1.35 grew the window by {grown} px, expected 100"
+        );
+    }
+
+    #[test]
+    fn tapping_a_source_workspace_views_it_on_the_tapped_monitor_not_the_mouses() {
+        let mut f = set_up_with(Config::default(), (1920, 1080), &[("steam", 1280, 800)]);
+        f.add_output(2, (1920, 1080));
+        let tapped = f.niri_output(1);
+        let with_mouse = f.niri_output(2);
+        input::add_device(&mut f);
+        f.niri().config.borrow_mut().input.touch.map_to_output = Some(tapped.name());
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        map_window_on(&mut f, id, &steam, 400, 300);
+        open_overview(&mut f);
+        let mouse_geo = geometry(&mut f, &with_mouse);
+        f.niri_state().move_cursor(center(mouse_geo));
+
+        let niri = f.niri();
+        let projection = niri
+            .projection_state
+            .projections
+            .iter()
+            .find(|p| p.source == "steam" && p.viewer == tapped.name())
+            .unwrap()
+            .clone();
+        // The empty workspace below the window's.
+        let ws1 = niri
+            .layout
+            .monitor_for_output(&steam)
+            .unwrap()
+            .workspaces_render_geo()
+            .nth(1)
+            .unwrap();
+        // Its top edge; the column crops the rest of it.
+        let tap = projection.to_viewer(Point::from((center(ws1).x, ws1.loc.y + 40.)));
+        let tapped_geo = geometry(&mut f, &tapped);
+        input::touch_tap(
+            &mut f,
+            (tap.x / tapped_geo.size.w, tap.y / tapped_geo.size.h),
+        );
+        f.niri_complete_animations();
+
+        let viewing = f.niri().projection_state.viewing.clone().unwrap();
+        assert_eq!(viewing.source, "steam");
+        assert_eq!(
+            viewing.viewer,
+            tapped.name(),
+            "view mode started on the monitor under the mouse, not the one tapped"
         );
     }
 

@@ -25,7 +25,11 @@ pub struct TouchOverviewGrab {
     start_data: AnyStartData<State>,
     start_timestamp: Duration,
     last_location: Point<f64, Logical>,
+    /// The output the gesture drives, which is a projection's source when the grab started
+    /// in a projected column.
     output: Output,
+    /// The physical output the grab started on.
+    input_output: Output,
     start_pos_within_output: Point<f64, Logical>,
     /// The projection scale where the grab started; touch deltas divide by it.
     input_scale: f64,
@@ -48,24 +52,26 @@ enum GestureState {
 }
 
 impl TouchOverviewGrab {
-    #[allow(clippy::too_many_arguments)]
+    /// Returns `None` when nothing is under the start location.
     pub fn new(
+        state: &State,
         start_data: AnyStartData<State>,
         start_timestamp: Duration,
-        output: Output,
-        start_pos_within_output: Point<f64, Logical>,
-        input_scale: f64,
         workspace_id: Option<WorkspaceId>,
         workspace_matched_narrow: bool,
         window: Option<Window>,
-    ) -> Self {
+    ) -> Option<Self> {
         let location = start_data.location();
+        let (output, start_pos_within_output) = state.niri.output_under(location)?;
+        let input_output = state.niri.physical_output_at(location, output);
+        let input_scale = state.niri.projection_scale_at(location);
 
-        Self {
+        Some(Self {
             last_location: location,
             start_timestamp,
             start_data,
-            output,
+            output: output.clone(),
+            input_output,
             start_pos_within_output,
             input_scale,
             workspace_id,
@@ -74,7 +80,7 @@ impl TouchOverviewGrab {
             gesture: GestureState::Recognizing,
             new_location: location,
             event_timestamp: None,
-        }
+        })
     }
 
     fn on_frame(&mut self, data: &mut State) -> bool {
@@ -213,7 +219,11 @@ impl TouchOverviewGrab {
                     };
 
                     if let Some(ws_id) = ws_id {
-                        state.niri.activate_overview_workspace(&self.output, ws_id);
+                        state.niri.activate_overview_workspace(
+                            &self.output,
+                            ws_id,
+                            &self.input_output,
+                        );
                     }
                 }
 

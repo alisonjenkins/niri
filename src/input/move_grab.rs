@@ -102,7 +102,8 @@ impl MoveGrab {
                             .then(|| (mon.map(|mon| mon.output().clone()), ws.id()))
                     });
                     if let Some((Some(output), ws_id)) = res {
-                        data.niri.activate_overview_workspace(&output, ws_id);
+                        data.niri
+                            .activate_overview_workspace(&output, ws_id, &self.pointer_output);
                     }
                 }
 

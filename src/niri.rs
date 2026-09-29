@@ -3384,13 +3384,25 @@ impl Niri {
     /// Otherwise the viewer is the active monitor if it is physical, else
     /// the physical output under the pointer, else the first physical one.
     pub fn start_viewing(&mut self, name: &str) -> Result<ViewOutputState, VirtualOutputError> {
+        self.start_viewing_on(name, None)
+    }
+
+    /// [`Self::start_viewing`], showing it on `input_output` when that is a physical output:
+    /// the monitor a click or tap that asked for view mode happened on.
+    fn start_viewing_on(
+        &mut self,
+        name: &str,
+        input_output: Option<&Output>,
+    ) -> Result<ViewOutputState, VirtualOutputError> {
         let Some(source) = self.layout.outputs().find(|o| o.name() == name).cloned() else {
             return Err(VirtualOutputError::NotFound(name.to_owned()));
         };
         if !is_virtual_output(&source) {
             return Err(VirtualOutputError::NotVirtual(name.to_owned()));
         }
-        let Some(viewer) = self.pick_viewer() else {
+        let preferred = input_output
+            .filter(|o| !is_virtual_output(o) && self.layout.outputs().any(|live| live == *o));
+        let Some(viewer) = preferred.cloned().or_else(|| self.pick_viewer()) else {
             return Err(VirtualOutputError::NoViewer(name.to_owned()));
         };
 
@@ -3435,7 +3447,15 @@ impl Niri {
     /// A virtual output's workspace also starts view mode on it (FR-004).
     /// A workspace on the current viewer itself ends view mode, since
     /// otherwise closing the overview would cover the workspace just picked.
-    pub fn activate_overview_workspace(&mut self, output: &Output, ws_id: WorkspaceId) {
+    ///
+    /// `input_output` is the physical output the click or tap happened on; view mode starts
+    /// there.
+    pub fn activate_overview_workspace(
+        &mut self,
+        output: &Output,
+        ws_id: WorkspaceId,
+        input_output: &Output,
+    ) {
         let Some((ws_idx, _)) = self.layout.find_workspace_by_id(ws_id) else {
             debug!(output = %output.name(), ?ws_id, "clicked overview workspace is gone");
             return;
@@ -3456,7 +3476,7 @@ impl Niri {
         self.layout.toggle_overview_to_workspace(ws_idx);
 
         if is_source {
-            if let Err(error) = self.start_viewing(&output_name) {
+            if let Err(error) = self.start_viewing_on(&output_name, Some(input_output)) {
                 warn!(output = %output_name, %error, "cannot view the clicked virtual output");
             }
         }
