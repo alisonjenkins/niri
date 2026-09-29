@@ -109,7 +109,7 @@ impl MoveGrab {
 
                 data.niri.layout.activate_window(&self.window);
             }
-            GestureState::Move => data.niri.layout.interactive_move_end(&self.window),
+            GestureState::Move => data.niri.interactive_move_end(&self.window),
             GestureState::ViewOffset => {
                 data.niri.layout.view_offset_gesture_end(Some(false));
             }

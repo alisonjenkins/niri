@@ -4478,6 +4478,15 @@ impl<W: LayoutElement> Layout<W> {
         Some((&move_.output, move_.pointer_pos_within_output))
     }
 
+    /// Whether a drop of the ongoing interactive move would land somewhere, rather than put
+    /// the window back.
+    pub fn interactive_move_has_target(&self) -> bool {
+        matches!(
+            &self.interactive_move,
+            Some(InteractiveMoveState::Moving(move_)) if move_.has_target
+        )
+    }
+
     pub fn interactive_move_is_moving_above_output(&self, output: &Output) -> bool {
         let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move else {
             return false;

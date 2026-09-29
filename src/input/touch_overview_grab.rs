@@ -231,7 +231,6 @@ impl TouchOverviewGrab {
             GestureState::InteractiveMove => {
                 state
                     .niri
-                    .layout
                     .interactive_move_end(self.window.as_ref().unwrap());
             }
         };

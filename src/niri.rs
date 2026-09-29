@@ -4061,6 +4061,59 @@ impl Niri {
         Some(ongoing)
     }
 
+    /// Ends the interactive move of `window`, logging where it went when it was dropped onto
+    /// an overview band tile.
+    pub fn interactive_move_end(&mut self, window: &Window) {
+        let tile = self
+            .layout
+            .interactive_move_pointer()
+            .filter(|_| self.layout.interactive_move_has_target())
+            .and_then(|(source, pos_within_source)| {
+                let source = source.name();
+                self.projection_state.projections.iter().find(|p| {
+                    p.source == source
+                        && matches!(p.kind, ProjectionKind::Tile { .. })
+                        && p.region.contains(p.to_viewer(pos_within_source))
+                })
+            })
+            .map(|p| (p.viewer.clone(), p.source.clone()));
+
+        self.layout.interactive_move_end(window);
+
+        let Some((viewer, source)) = tile else {
+            return;
+        };
+        let id = self
+            .layout
+            .windows()
+            .find(|(_, mapped)| mapped.window == *window)
+            .map(|(_, mapped)| mapped.id().get());
+        let workspace = self
+            .layout
+            .workspaces()
+            .find(|(_, _, ws)| ws.has_window(window))
+            .map(|(mon, idx, ws)| {
+                let output = mon.map_or_else(|| String::from("none"), |mon| mon.output().name());
+                (output, idx, ws.id().get())
+            });
+        match (id, workspace) {
+            (Some(id), Some((output, workspace_idx, workspace_id))) => info!(
+                window = id,
+                %output,
+                workspace_idx,
+                workspace_id,
+                %viewer,
+                tile_source = %source,
+                "dropped a window onto an overview band tile"
+            ),
+            _ => debug!(
+                %viewer,
+                %source,
+                "window dropped onto an overview band tile is gone from the layout"
+            ),
+        }
+    }
+
     /// The physical monitor whose overview band, tiles included, is under `pos`.
     ///
     /// Decided by the physical output, so scrolling over a tile scrolls the column rather than
