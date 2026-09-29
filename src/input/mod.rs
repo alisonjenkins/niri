@@ -2363,9 +2363,9 @@ impl State {
                 }
             }
             Action::ViewOutput(name) => {
-                // Binds have no reply channel, so the error goes on screen;
-                // view_output has already logged it.
+                // Binds have no reply channel, so the error is logged here and shown on screen.
                 if let Err(error) = self.view_output(name.as_deref()) {
+                    warn!(name = name.as_deref(), %error, "view-output bind failed");
                     self.niri.show_view_output_error(&error);
                 }
             }

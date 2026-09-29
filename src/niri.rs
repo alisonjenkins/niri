@@ -783,8 +783,10 @@ impl State {
             Err(VirtualOutputError::NotFound(_)) => Err(self.classify_output_not_in_layout(name)),
             other => other,
         };
+        // Callers log the rejection once at warn: the IPC server for requests, the bind action
+        // for binds. This line keeps the structured detail for debugging without doubling it.
         if let Err(error) = &result {
-            warn!(name, %error, "rejected view-output request");
+            debug!(name, %error, "rejected view-output request");
         }
         result
     }
