@@ -4643,6 +4643,300 @@ mod overview_column_tests {
     }
 }
 
+/// Real pointer drags through the move grab between the viewer and band tiles.
+mod overview_drag_tests {
+    use smithay::desktop::Window;
+    use smithay::output::Output;
+    use smithay::utils::{Logical, Point, Rectangle};
+
+    use super::overview_band_tests::{move_pointer_to, refresh, set_up, toggle_overview};
+    use super::overview_tests::{map_window_on, output_named, tile_for, window_center_on};
+    use crate::niri::Niri;
+    use crate::tests::fixture::Fixture;
+    use crate::tests::input;
+
+    fn center(rect: Rectangle<f64, Logical>) -> Point<f64, Logical> {
+        rect.loc + rect.size.downscale(2.).to_point()
+    }
+
+    /// Presses the left button at `from` and moves to `to` in steps, keeping the button held.
+    pub(super) fn press_and_move(
+        f: &mut Fixture,
+        from: Point<f64, Logical>,
+        to: Point<f64, Logical>,
+    ) {
+        move_pointer_to(f, from);
+        input::pointer_button(f, input::BTN_LEFT, true);
+        refresh(f);
+        for step in 1..=10 {
+            move_pointer_to(f, from + (to - from).upscale(f64::from(step) / 10.));
+        }
+    }
+
+    pub(super) fn release(f: &mut Fixture) {
+        input::pointer_button(f, input::BTN_LEFT, false);
+        refresh(f);
+        f.niri_complete_animations();
+        refresh(f);
+    }
+
+    fn drag(f: &mut Fixture, from: Point<f64, Logical>, to: Point<f64, Logical>) {
+        press_and_move(f, from, to);
+        release(f);
+    }
+
+    fn windows_by_workspace(niri: &Niri, output: &Output) -> Vec<Vec<Window>> {
+        niri.layout
+            .monitor_for_output(output)
+            .unwrap()
+            .workspaces_with_render_geo_cull(false)
+            .map(|(ws, _)| ws.windows().map(|m| m.window.clone()).collect())
+            .collect()
+    }
+
+    /// Where `window` on `source` is shown in its tile on the viewer.
+    pub(super) fn in_tile(
+        f: &mut Fixture,
+        source: &Output,
+        window: &Window,
+    ) -> Point<f64, Logical> {
+        let niri = f.niri();
+        let ws_idx = niri
+            .layout
+            .monitor_for_output(source)
+            .unwrap()
+            .workspaces_with_render_geo_cull(false)
+            .position(|(ws, _)| ws.has_window(window))
+            .unwrap();
+        tile_for(niri, &source.name(), ws_idx).to_viewer(window_center_on(niri, source, window))
+    }
+
+    /// Near the top of workspace `ws_idx`'s tile, which stays visible for the last one.
+    pub(super) fn tile_point(f: &mut Fixture, source: &str, ws_idx: usize) -> Point<f64, Logical> {
+        let region = tile_for(f.niri(), source, ws_idx).region;
+        Point::from((region.loc.x + region.size.w / 2., region.loc.y + 20.))
+    }
+
+    fn viewer_workspace_centre(f: &mut Fixture, viewer: &Output) -> Point<f64, Logical> {
+        center(
+            f.niri()
+                .layout
+                .monitor_for_output(viewer)
+                .unwrap()
+                .workspaces_render_geo()
+                .next()
+                .unwrap(),
+        )
+    }
+
+    /// The viewer with window `v`, steam with `s` on its first workspace, the viewer
+    /// focused and the overview open.
+    pub(super) fn drag_set_up(
+        sources: &[(&str, u16, u16)],
+    ) -> (Fixture, Output, Output, Window, Window) {
+        let mut f = set_up(sources);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        let s = map_window_on(&mut f, id, &steam, 400, 300);
+        let v = map_window_on(&mut f, id, &viewer, 400, 300);
+        f.niri().layout.focus_output(&viewer);
+        f.niri_complete_animations();
+        toggle_overview(&mut f);
+        (f, viewer, steam, v, s)
+    }
+
+    #[test]
+    fn dragging_from_the_viewer_onto_a_tile_moves_the_window_there() {
+        let (mut f, viewer, steam, v, s) = drag_set_up(&[("steam", 1280, 800)]);
+        let niri = f.niri();
+        let from = window_center_on(niri, &viewer, &v);
+        let to = in_tile(&mut f, &steam, &s);
+
+        drag(&mut f, from, to);
+
+        let windows = windows_by_workspace(f.niri(), &steam);
+        assert!(
+            windows[0].contains(&s) && windows[0].contains(&v),
+            "{windows:?}"
+        );
+        assert!(f.niri().layout.is_overview_open());
+    }
+
+    #[test]
+    fn dragging_from_a_tile_onto_the_viewer_moves_the_window_there() {
+        let (mut f, viewer, steam, v, s) = drag_set_up(&[("steam", 1280, 800)]);
+        let from = in_tile(&mut f, &steam, &s);
+        let to = viewer_workspace_centre(&mut f, &viewer);
+
+        drag(&mut f, from, to);
+
+        assert!(windows_by_workspace(f.niri(), &viewer)[0].contains(&s));
+        assert!(windows_by_workspace(f.niri(), &viewer)[0].contains(&v));
+        assert!(windows_by_workspace(f.niri(), &steam)
+            .iter()
+            .all(|ws| ws.is_empty()));
+    }
+
+    #[test]
+    fn dragging_between_tiles_of_one_output_moves_the_window() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        let s = map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().layout.switch_workspace_down();
+        let t = map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().layout.switch_workspace(0);
+        f.niri().layout.focus_output(&viewer);
+        f.niri_complete_animations();
+        toggle_overview(&mut f);
+        assert_eq!(
+            windows_by_workspace(f.niri(), &steam)[1],
+            std::slice::from_ref(&t)
+        );
+        let from = in_tile(&mut f, &steam, &s);
+        let to = in_tile(&mut f, &steam, &t);
+
+        drag(&mut f, from, to);
+
+        let windows = windows_by_workspace(f.niri(), &steam);
+        assert!(!windows[0].contains(&s), "{windows:?}");
+        assert!(
+            windows.iter().any(|ws| ws.contains(&s) && ws.contains(&t)),
+            "{windows:?}"
+        );
+    }
+
+    #[test]
+    fn dragging_between_tiles_of_different_outputs_moves_the_window() {
+        let (mut f, _viewer, steam, _v, s) =
+            drag_set_up(&[("aux", 1280, 800), ("steam", 1280, 800)]);
+        let aux = output_named(&mut f, "aux");
+        let from = in_tile(&mut f, &steam, &s);
+        let to = tile_point(&mut f, "aux", 0);
+
+        drag(&mut f, from, to);
+
+        assert_eq!(
+            windows_by_workspace(f.niri(), &aux)[0],
+            std::slice::from_ref(&s)
+        );
+        assert!(!f
+            .niri()
+            .layout
+            .windows_for_output(&steam)
+            .any(|m| m.window == s));
+    }
+
+    #[test]
+    fn dropping_on_the_empty_last_tile_creates_a_workspace() {
+        let (mut f, viewer, steam, v, s) = drag_set_up(&[("steam", 1280, 800)]);
+        assert_eq!(windows_by_workspace(f.niri(), &steam).len(), 2);
+        let from = window_center_on(f.niri(), &viewer, &v);
+        let to = tile_point(&mut f, "steam", 1);
+
+        drag(&mut f, from, to);
+
+        assert_eq!(
+            windows_by_workspace(f.niri(), &steam),
+            vec![vec![s], vec![v], vec![]]
+        );
+    }
+
+    #[test]
+    fn the_insert_hint_shows_on_the_hovered_tile() {
+        let (mut f, viewer, steam, v, s) = drag_set_up(&[("steam", 1280, 800)]);
+        let from = window_center_on(f.niri(), &viewer, &v);
+        let to = in_tile(&mut f, &steam, &s);
+
+        press_and_move(&mut f, from, to);
+        f.niri().update_render_elements(None);
+
+        let niri = f.niri();
+        let steam_ws = niri
+            .layout
+            .monitor_for_output(&steam)
+            .unwrap()
+            .workspaces_with_render_geo_cull(false)
+            .next()
+            .unwrap()
+            .0
+            .id();
+        let hint = |output: &Output| {
+            niri.layout
+                .monitor_for_output(output)
+                .unwrap()
+                .insert_hint_workspace()
+        };
+        assert_eq!(hint(&steam), Some(Some(steam_ws)));
+        assert_eq!(hint(&viewer), None);
+        release(&mut f);
+    }
+
+    #[test]
+    fn dragging_within_a_tile_reorders_its_windows() {
+        let (mut f, viewer, steam, _v, s) = drag_set_up(&[("steam", 1280, 800)]);
+        let id = f.state.clients[0].id;
+        let t = map_window_on(&mut f, id, &steam, 300, 300);
+        f.niri().layout.focus_output(&viewer);
+        f.niri_complete_animations();
+        refresh(&mut f);
+        assert_eq!(
+            windows_by_workspace(f.niri(), &steam)[0],
+            [s.clone(), t.clone()]
+        );
+
+        let from = in_tile(&mut f, &steam, &s);
+        let niri = f.niri();
+        let mon = niri.layout.monitor_for_output(&steam).unwrap();
+        let zoom = mon.overview_zoom();
+        let (ws, ws_geo) = mon.workspaces_with_render_geo().next().unwrap();
+        let (tile, tile_pos, _) = ws
+            .tiles_with_render_positions()
+            .find(|(tile, _, _)| tile.window().window == t)
+            .unwrap();
+        let past_t = tile_pos + Point::from((tile.tile_size().w + 10., tile.tile_size().h / 2.));
+        let to = tile_for(niri, "steam", 0).to_viewer(ws_geo.loc + past_t.upscale(zoom));
+
+        drag(&mut f, from, to);
+
+        assert_eq!(windows_by_workspace(f.niri(), &steam)[0], [t, s]);
+    }
+
+    #[test]
+    fn turning_the_source_off_mid_drag_keeps_the_drag_and_the_window() {
+        let (mut f, viewer, steam, v, s) = drag_set_up(&[("steam", 1280, 800)]);
+        let from = window_center_on(f.niri(), &viewer, &v);
+        let to = in_tile(&mut f, &steam, &s);
+        press_and_move(&mut f, from, to);
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .remove_virtual_output(&mut state.niri, "steam")
+            .unwrap();
+        refresh(&mut f);
+        input::pointer_motion(&mut f, (0., 5.));
+        refresh(&mut f);
+
+        assert!(f.niri().seat.get_pointer().unwrap().is_grabbed());
+        let (output, _) = f.niri().output_under(to).unwrap();
+        assert_eq!(output, &viewer);
+
+        release(&mut f);
+        let windows: Vec<Window> = f
+            .niri()
+            .layout
+            .windows()
+            .map(|(_, m)| m.window.clone())
+            .collect();
+        assert!(windows.contains(&v));
+        assert!(windows.contains(&s));
+    }
+}
+
 /// What the band draws, and in which order.
 mod overview_band_render_tests {
     use niri_config::Action;
