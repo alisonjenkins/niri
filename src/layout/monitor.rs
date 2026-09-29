@@ -2068,6 +2068,13 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn dnd_scroll_gesture_scroll(&mut self, pos: Point<f64, Logical>, speed: f64) -> bool {
+        // A monitor shown in overview band tiles is only dragged over through a tile, where the
+        // band's column scrolls instead, and positions in its lower workspaces lie past its own
+        // bottom edge. Scrolling its overview would switch the workspaces it shows.
+        if self.overview_offscreen_reachable {
+            return false;
+        }
+
         let zoom = self.overview_zoom();
         // Restrict the scrolling horizontally to the strip of workspaces to avoid unwanted trigger
         // after using the hot corner or during horizontal scroll.

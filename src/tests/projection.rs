@@ -5172,6 +5172,32 @@ mod overview_drag_tests {
     }
 
     #[test]
+    fn a_drag_over_a_lower_tile_leaves_the_sources_own_overview_alone() {
+        let (mut f, viewer, _steam) = drag_held_at(Point::from((band_x(), 700.)));
+        let aux = output_named(&mut f, "aux");
+        // aux's third workspace lies below aux's own screen in its overview, where its own
+        // DnD edge scroll would switch its workspaces.
+        let at = tile_point(&mut f, "aux", 2);
+        move_pointer_to(&mut f, at);
+        let (output, pos) = f.niri().output_under(at).unwrap();
+        assert_eq!(output, &aux);
+        assert!(pos.y > 800., "{pos:?}");
+        let aux_idx = |f: &mut Fixture| {
+            let mon = f.niri().layout.monitor_for_output(&aux).unwrap();
+            (mon.active_workspace_idx(), mon.workspace_render_idx())
+        };
+        let before = aux_idx(&mut f);
+        let scroll = column_scroll(&mut f, &viewer).0;
+
+        run_frames(&mut f, 30);
+
+        assert_eq!(aux_idx(&mut f), before);
+        assert_eq!(column_scroll(&mut f, &viewer).0, scroll);
+        release(&mut f);
+        assert_eq!(aux_idx(&mut f).0, before.0);
+    }
+
+    #[test]
     fn turning_the_source_off_mid_drag_keeps_the_drag_and_the_window() {
         let (mut f, viewer, steam, v, s) = drag_set_up(&[("steam", 1280, 800)]);
         let from = window_center_on(f.niri(), &viewer, &v);
