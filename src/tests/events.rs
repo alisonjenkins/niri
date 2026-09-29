@@ -1,8 +1,10 @@
 //! What the compositor sends on the IPC event stream, read through a socketless subscriber.
 
+use std::collections::HashMap;
+
 use async_channel::Receiver;
-use niri_config::Action;
-use niri_ipc::{Event, ViewOutputState};
+use niri_config::{Action, OutputName};
+use niri_ipc::{Event, Output as IpcOutput, ViewOutputState};
 use smithay::output::Output;
 
 use super::fixture::Fixture;
@@ -65,11 +67,39 @@ fn view_events(f: &mut Fixture, events: &Receiver<Event>) -> Vec<ViewOutputState
         .collect()
 }
 
+fn outputs_events(f: &mut Fixture, events: &Receiver<Event>) -> Vec<Vec<(String, bool)>> {
+    refresh(f);
+    drain(events)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::OutputsChanged { outputs } => Some(summary(&outputs)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn viewing(source: &str) -> ViewOutputState {
     ViewOutputState::Viewing {
         viewer: "headless-1".to_string(),
         source: source.to_string(),
     }
+}
+
+/// Names and on/off state, sorted by name.
+fn summary(outputs: &HashMap<String, IpcOutput>) -> Vec<(String, bool)> {
+    let mut summary: Vec<_> = outputs
+        .iter()
+        .map(|(name, output)| {
+            assert_eq!(name, &output.name);
+            (name.clone(), output.logical.is_some())
+        })
+        .collect();
+    summary.sort();
+    summary
+}
+
+fn on_off(entries: &[(&str, bool)]) -> Vec<(String, bool)> {
+    entries.iter().map(|(n, on)| (n.to_string(), *on)).collect()
 }
 
 /// Opens the overview and clicks the workspace of `source` on the viewer.
@@ -229,7 +259,78 @@ fn switching_the_viewed_source_sends_one_viewing_event() {
 }
 
 #[test]
-fn a_new_subscriber_gets_the_current_view_mode() {
+fn creating_a_virtual_output_sends_one_outputs_event() {
+    let mut f = set_up(&[]);
+    let events = subscribe(&mut f);
+
+    create(&mut f, "steam");
+
+    let expected = on_off(&[("headless-1", true), ("steam", true)]);
+    assert_eq!(outputs_events(&mut f, &events), [expected]);
+    assert_eq!(outputs_events(&mut f, &events), Vec::<Vec<_>>::new());
+}
+
+#[test]
+fn removing_a_virtual_output_sends_one_outputs_event() {
+    let mut f = set_up(&["steam"]);
+    let events = subscribe(&mut f);
+
+    let state = f.niri_state();
+    state
+        .backend
+        .headless()
+        .remove_virtual_output(&mut state.niri, "steam")
+        .unwrap();
+
+    let expected = on_off(&[("headless-1", true)]);
+    assert_eq!(outputs_events(&mut f, &events), [expected]);
+}
+
+#[test]
+fn turning_an_output_off_and_on_sends_one_outputs_event_each() {
+    let mut f = set_up(&["steam"]);
+    let events = subscribe(&mut f);
+    let steam = output_named(&mut f, "steam");
+
+    f.niri().remove_output(&steam);
+    let expected = on_off(&[("headless-1", true), ("steam", false)]);
+    assert_eq!(outputs_events(&mut f, &events), [expected]);
+
+    // Turning back on adds a fresh Output with the same identity, as the TTY backend does.
+    let rebuilt = Output::new(steam.name(), steam.physical_properties());
+    let mode = steam.current_mode().unwrap();
+    rebuilt.change_current_state(Some(mode), None, None, None);
+    rebuilt.set_preferred(mode);
+    let name = steam.user_data().get::<OutputName>().unwrap().clone();
+    rebuilt.user_data().insert_if_missing(|| name);
+    f.niri().add_output(rebuilt, None, false);
+
+    let expected = on_off(&[("headless-1", true), ("steam", true)]);
+    assert_eq!(outputs_events(&mut f, &events), [expected]);
+}
+
+#[test]
+fn a_mode_change_alone_sends_no_outputs_event() {
+    let mut f = set_up(&["steam"]);
+    let events = subscribe(&mut f);
+
+    let state = f.niri_state();
+    for output in state.backend.ipc_outputs().lock().unwrap().values_mut() {
+        if output.name == "steam" {
+            let mut mode = output.modes[0];
+            mode.width = 1920;
+            mode.height = 1200;
+            output.modes.push(mode);
+            output.current_mode = Some(1);
+        }
+    }
+    state.niri.ipc_outputs_changed = true;
+
+    assert_eq!(outputs_events(&mut f, &events), Vec::<Vec<_>>::new());
+}
+
+#[test]
+fn a_new_subscriber_gets_the_current_view_mode_and_outputs() {
     let mut f = set_up(&["steam"]);
     f.niri_state().view_output(Some("steam")).unwrap();
     refresh(&mut f);
@@ -244,4 +345,12 @@ fn a_new_subscriber_gets_the_current_view_mode() {
         })
         .collect();
     assert_eq!(view, [viewing("steam")]);
+    let outputs: Vec<_> = initial
+        .iter()
+        .filter_map(|event| match event {
+            Event::OutputsChanged { outputs } => Some(summary(outputs)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outputs, [on_off(&[("headless-1", true), ("steam", true)])]);
 }

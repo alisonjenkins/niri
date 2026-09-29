@@ -2189,6 +2189,7 @@ impl State {
         self.niri.on_ipc_outputs_changed();
 
         let new_config = self.backend.ipc_outputs().lock().unwrap().clone();
+        self.ipc_refresh_outputs(&new_config);
         self.niri.output_management_state.notify_changes(new_config);
     }
 
@@ -3182,6 +3183,9 @@ impl Niri {
 
         self.layout.remove_output(output);
         self.global_space.unmap_output(output);
+        // Its logical position is gone even when no other output moves; the headless backend has
+        // nothing else that would mark the IPC outputs changed.
+        self.ipc_outputs_changed = true;
         self.reposition_outputs(None);
         self.gamma_control_manager_state.output_removed(output);
 

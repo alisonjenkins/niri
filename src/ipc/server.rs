@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -919,6 +919,42 @@ impl State {
 
         debug!(?view_state, "sending view output event");
         let event = Event::ViewOutputChanged { state: view_state };
+        state.apply(event.clone());
+        server.send_event(event);
+    }
+
+    /// Sends the full output map when an output appears, disappears, or turns on or off.
+    ///
+    /// Mode, scale, transform and position changes alone are not reported.
+    pub fn ipc_refresh_outputs(&mut self, ipc_outputs: &IpcOutputMap) {
+        let Some(server) = &self.niri.ipc_server else {
+            return;
+        };
+
+        let mut state = server.event_stream_state.borrow_mut();
+        let state = &mut state.outputs;
+
+        fn power(output: &niri_ipc::Output) -> (bool, bool) {
+            (output.current_mode.is_some(), output.logical.is_some())
+        }
+
+        let outputs: HashMap<String, niri_ipc::Output> = ipc_outputs
+            .values()
+            .map(|output| (output.name.clone(), output.clone()))
+            .collect();
+        let unchanged = outputs.len() == state.outputs.len()
+            && outputs.iter().all(|(name, output)| {
+                state
+                    .outputs
+                    .get(name)
+                    .is_some_and(|old| power(old) == power(output))
+            });
+        if unchanged {
+            return;
+        }
+
+        debug!(count = outputs.len(), "sending outputs event");
+        let event = Event::OutputsChanged { outputs };
         state.apply(event.clone());
         server.send_event(event);
     }
