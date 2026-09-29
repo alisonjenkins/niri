@@ -1832,6 +1832,12 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    pub fn set_overview_offscreen_reachable(&mut self, output: &Output, reachable: bool) {
+        if let Some(mon) = self.monitor_for_output_mut(output) {
+            mon.set_overview_offscreen_reachable(reachable);
+        }
+    }
+
     pub fn monitor_for_workspace(&self, workspace_name: &str) -> Option<&Monitor<W>> {
         self.monitors().find(|monitor| {
             monitor.workspaces.iter().any(|ws| {
