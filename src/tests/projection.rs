@@ -603,7 +603,7 @@ mod overview_tests {
 
     /// A wide physical viewer, like the 5120x1440 desk monitor, and the given
     /// virtual outputs.
-    fn set_up(viewer_size: (u16, u16), sources: &[(&str, u16, u16)]) -> Fixture {
+    pub(super) fn set_up(viewer_size: (u16, u16), sources: &[(&str, u16, u16)]) -> Fixture {
         let mut f = Fixture::new();
         f.add_output(1, viewer_size);
         for (name, w, h) in sources {
@@ -617,7 +617,7 @@ mod overview_tests {
         f
     }
 
-    fn output_named(f: &mut Fixture, name: &str) -> Output {
+    pub(super) fn output_named(f: &mut Fixture, name: &str) -> Output {
         f.niri()
             .layout
             .outputs()
@@ -626,7 +626,13 @@ mod overview_tests {
             .clone()
     }
 
-    fn map_window_on(f: &mut Fixture, id: ClientId, output: &Output, w: u16, h: u16) -> Window {
+    pub(super) fn map_window_on(
+        f: &mut Fixture,
+        id: ClientId,
+        output: &Output,
+        w: u16,
+        h: u16,
+    ) -> Window {
         f.niri().layout.focus_output(output);
 
         let window = f.client(id).create_window();
@@ -690,7 +696,11 @@ mod overview_tests {
 
     /// Where the centre of `window` is drawn on `output`, in output-local
     /// coordinates, following the overview zoom.
-    fn window_center_on(niri: &Niri, output: &Output, window: &Window) -> Point<f64, Logical> {
+    pub(super) fn window_center_on(
+        niri: &Niri,
+        output: &Output,
+        window: &Window,
+    ) -> Point<f64, Logical> {
         let mon = niri.layout.monitor_for_output(output).unwrap();
         let zoom = mon.overview_zoom();
         let (ws, ws_geo) = mon
@@ -1108,6 +1118,198 @@ mod overview_tests {
         state.niri.redraw_queued_outputs(&mut state.backend);
         assert_eq!(frames(&state.niri, &steam), steam_frames + 1);
         assert_eq!(frames(&state.niri, &viewer), viewer_frames + 2);
+    }
+}
+
+mod view_tests {
+    use niri_ipc::ViewOutputState;
+    use smithay::utils::{Logical, Point};
+
+    use super::overview_tests::{map_window_on, output_named, set_up, window_center_on};
+    use crate::backend::virtual_output::VirtualOutputError;
+    use crate::projection::{ProjectionKind, Viewing};
+    use crate::tests::fixture::Fixture;
+
+    fn viewing(f: &mut Fixture) -> Option<Viewing> {
+        f.niri().projection_state.viewing.clone()
+    }
+
+    fn active_output_name(f: &mut Fixture) -> String {
+        f.niri().layout.active_output().unwrap().name()
+    }
+
+    fn start(f: &mut Fixture, name: &str) -> ViewOutputState {
+        let state = f.niri().start_viewing(name).unwrap();
+        f.niri_complete_animations();
+        state
+    }
+
+    #[test]
+    fn viewing_routes_the_viewer_centre_to_the_source_window() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let window = map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().layout.focus_output(&viewer);
+
+        let reply = start(&mut f, "steam");
+        assert_eq!(
+            reply,
+            ViewOutputState::Viewing {
+                viewer: viewer.name(),
+                source: "steam".to_string(),
+            }
+        );
+        assert_eq!(active_output_name(&mut f), "steam");
+
+        let niri = f.niri();
+        let projection = niri
+            .projection_state
+            .projections
+            .iter()
+            .find(|p| p.kind == ProjectionKind::View)
+            .unwrap()
+            .clone();
+        let centre_on_source = window_center_on(niri, &steam, &window);
+        let pos = projection.to_viewer(centre_on_source);
+
+        let contents = niri.contents_under(pos);
+        assert_eq!(contents.window.as_ref().unwrap().0, window);
+        let (_, focus_loc) = contents.surface.unwrap();
+        let surface_local = pos - focus_loc;
+        // One physical pixel on the scale-1 viewer.
+        assert!(
+            (surface_local.x - 200.).abs() < 1. && (surface_local.y - 150.).abs() < 1.,
+            "surface-local position {surface_local:?} is not the window centre"
+        );
+
+        // The letterbox is x in [96, 1824]; x=10 is in the left bar.
+        let bar = niri.contents_under(Point::<f64, Logical>::from((10., 540.)));
+        assert!(bar.surface.is_none());
+        assert!(bar.window.is_none());
+    }
+
+    #[test]
+    fn stop_returns_the_viewer_to_its_own_workspaces() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        start(&mut f, "steam");
+
+        let reply = f.niri().stop_viewing();
+
+        assert_eq!(
+            reply,
+            ViewOutputState::Stopped {
+                viewer: viewer.name(),
+                source: "steam".to_string(),
+            }
+        );
+        assert_eq!(viewing(&mut f), None);
+        assert!(f.niri().projection_state.projections.is_empty());
+        assert_eq!(active_output_name(&mut f), viewer.name());
+    }
+
+    #[test]
+    fn stop_when_not_viewing_changes_nothing() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let active = active_output_name(&mut f);
+
+        assert_eq!(f.niri().stop_viewing(), ViewOutputState::NotViewing);
+        assert_eq!(viewing(&mut f), None);
+        assert_eq!(active_output_name(&mut f), active);
+    }
+
+    #[test]
+    fn viewing_another_source_switches_on_the_same_viewer() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800), ("aux", 1920, 1080)]);
+        let viewer = f.niri_output(1);
+        start(&mut f, "steam");
+
+        let reply = start(&mut f, "aux");
+
+        assert_eq!(
+            reply,
+            ViewOutputState::Viewing {
+                viewer: viewer.name(),
+                source: "aux".to_string(),
+            }
+        );
+        assert_eq!(active_output_name(&mut f), "aux");
+    }
+
+    #[test]
+    fn removing_the_source_ends_view_mode_on_the_viewer() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        // A second physical output, so the viewer is not simply the only
+        // output left to fall back to.
+        f.add_output(2, (1920, 1080));
+        let viewer = f.niri_output(2);
+        f.niri().layout.focus_output(&viewer);
+        start(&mut f, "steam");
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .remove_virtual_output(&mut state.niri, "steam")
+            .unwrap();
+
+        assert_eq!(viewing(&mut f), None);
+        assert!(f.niri().projection_state.projections.is_empty());
+        assert_eq!(active_output_name(&mut f), viewer.name());
+    }
+
+    #[test]
+    fn removing_the_viewer_ends_view_mode_and_keeps_the_source() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        start(&mut f, "steam");
+
+        f.niri().remove_output(&viewer);
+
+        assert_eq!(viewing(&mut f), None);
+        assert!(f.niri().projection_state.projections.is_empty());
+        assert!(f.niri().layout.outputs().any(|o| o.name() == "steam"));
+    }
+
+    #[test]
+    fn rejected_names_leave_view_mode_unchanged() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        start(&mut f, "steam");
+        let before = viewing(&mut f);
+        assert!(before.is_some());
+
+        assert_eq!(
+            f.niri().start_viewing("nope"),
+            Err(VirtualOutputError::NotFound("nope".to_string()))
+        );
+        assert_eq!(viewing(&mut f), before);
+
+        assert_eq!(
+            f.niri().start_viewing(&viewer.name()),
+            Err(VirtualOutputError::NotVirtual(viewer.name()))
+        );
+        assert_eq!(viewing(&mut f), before);
+        assert_eq!(active_output_name(&mut f), "steam");
+    }
+
+    #[test]
+    fn viewing_without_a_physical_output_fails() {
+        let mut f = Fixture::new();
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+
+        assert_eq!(
+            f.niri().start_viewing("steam"),
+            Err(VirtualOutputError::NoViewer("steam".to_string()))
+        );
+        assert_eq!(viewing(&mut f), None);
     }
 }
 

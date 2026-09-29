@@ -19,6 +19,7 @@ use niri_config::{
     Config, FloatOrInt, Key, Modifiers, OutputName, TrackLayout, WarpMouseToFocusMode,
     WorkspaceReference, Xkb,
 };
+use niri_ipc::ViewOutputState;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::input::{InputTime, Keycode};
 use smithay::backend::renderer::damage::OutputDamageTracker;
@@ -122,7 +123,7 @@ use wayland_server::protocol::wl_output::WlOutput;
 use crate::a11y::A11y;
 use crate::animation::Clock;
 use crate::backend::tty::SurfaceDmabufFeedback;
-use crate::backend::virtual_output::is_virtual_output;
+use crate::backend::virtual_output::{is_virtual_output, VirtualOutputError};
 use crate::backend::{Backend, Headless, RenderResult, Tty, Winit};
 use crate::cursor::{CursorManager, CursorTextureCache, RenderCursor, XCursor};
 #[cfg(feature = "dbus")]
@@ -3260,6 +3261,7 @@ impl Niri {
                     "stopped viewing output"
                 );
                 self.projection_state.viewing = None;
+                self.on_viewing_lost(&viewing);
             }
         }
 
@@ -3308,6 +3310,99 @@ impl Niri {
         }
 
         self.projection_rebuild_overview_zoom = self.layout.overview_zoom();
+    }
+
+    /// Makes a physical output show the virtual output `name` (view mode),
+    /// and makes `name` the active monitor so window management acts on it.
+    ///
+    /// Already viewing keeps the same viewer and switches its source.
+    /// Otherwise the viewer is the active monitor if it is physical, else
+    /// the physical output under the pointer, else the first physical one.
+    pub fn start_viewing(&mut self, name: &str) -> Result<ViewOutputState, VirtualOutputError> {
+        let Some(source) = self.layout.outputs().find(|o| o.name() == name).cloned() else {
+            return Err(VirtualOutputError::NotFound(name.to_owned()));
+        };
+        if !is_virtual_output(&source) {
+            return Err(VirtualOutputError::NotVirtual(name.to_owned()));
+        }
+        let Some(viewer) = self.pick_viewer() else {
+            return Err(VirtualOutputError::NoViewer(name.to_owned()));
+        };
+
+        let viewer_name = viewer.name();
+        info!(viewer = %viewer_name, source = name, "started viewing output");
+        self.projection_state.viewing = Some(Viewing {
+            viewer: viewer_name.clone(),
+            source: name.to_owned(),
+        });
+        self.rebuild_projections();
+        self.layout.focus_output(&source);
+        self.queue_redraw(&viewer);
+
+        Ok(ViewOutputState::Viewing {
+            viewer: viewer_name,
+            source: name.to_owned(),
+        })
+    }
+
+    /// Ends view mode, returning the viewer to its own workspaces and making
+    /// it the active monitor.
+    pub fn stop_viewing(&mut self) -> ViewOutputState {
+        let Some(Viewing { viewer, source }) = self.projection_state.viewing.take() else {
+            return ViewOutputState::NotViewing;
+        };
+
+        info!(%viewer, %source, "stopped viewing output");
+        self.rebuild_projections();
+        let output = self.layout.outputs().find(|o| o.name() == viewer).cloned();
+        if let Some(output) = output {
+            self.layout.focus_output(&output);
+            self.queue_redraw(&output);
+        }
+
+        ViewOutputState::Stopped { viewer, source }
+    }
+
+    /// The physical output view mode should show a virtual output on.
+    fn pick_viewer(&self) -> Option<Output> {
+        let is_physical = |o: &&Output| !is_virtual_output(o);
+        let current = self.projection_state.viewing.as_ref().and_then(|viewing| {
+            self.layout
+                .outputs()
+                .filter(is_physical)
+                .find(|o| o.name() == viewing.viewer)
+        });
+        let active = || self.layout.active_output().filter(is_physical);
+        let under_pointer = || {
+            let pos = self.seat.get_pointer()?.current_location();
+            self.physical_output_under(pos)
+                .map(|(output, _)| output)
+                .filter(is_physical)
+        };
+        let first = || self.layout.outputs().find(is_physical);
+
+        current
+            .or_else(active)
+            .or_else(under_pointer)
+            .or_else(first)
+            .cloned()
+    }
+
+    /// Hands focus back after view mode ended on its own (FR-015).
+    ///
+    /// If the viewer survives it becomes active again. If the viewer is
+    /// gone the layout has already moved its focus, so nothing changes.
+    fn on_viewing_lost(&mut self, viewing: &Viewing) {
+        let Some(viewer) = self
+            .layout
+            .outputs()
+            .find(|o| o.name() == viewing.viewer)
+            .cloned()
+        else {
+            return;
+        };
+        self.layout.focus_output(&viewer);
+        self.queue_redraw(&viewer);
     }
 
     /// Why `viewing` should be dropped, or `None` if it is still valid.
