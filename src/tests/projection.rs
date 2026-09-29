@@ -2805,7 +2805,7 @@ mod screenshot_tests {
     use crate::tests::input;
 
     /// A viewer with a window of its own and a 1280x800 `steam` with a window on it.
-    fn set_up(viewer_size: (u16, u16)) -> (Fixture, Output) {
+    pub(super) fn set_up(viewer_size: (u16, u16)) -> (Fixture, Output) {
         let mut f = Fixture::new();
         f.niri_state().backend.headless().add_renderer().unwrap();
         f.add_output(1, viewer_size);
@@ -2824,7 +2824,7 @@ mod screenshot_tests {
         (f, viewer)
     }
 
-    fn viewer_loc(f: &mut Fixture, viewer: &Output) -> Point<f64, Logical> {
+    pub(super) fn viewer_loc(f: &mut Fixture, viewer: &Output) -> Point<f64, Logical> {
         f.niri()
             .global_space
             .output_geometry(viewer)
@@ -2965,5 +2965,43 @@ mod screenshot_tests {
             (viewer.name(), Rectangle::new(loc, (32, 32).into())),
             "the tap should select on the viewer the screenshot UI is drawn on"
         );
+    }
+}
+
+/// The colour picker while a virtual output is viewed. It renders from inside its pointer grab,
+/// where the pointer is locked, and must sample what the physical output shows.
+mod pick_color_tests {
+    use niri_ipc::PickedColor;
+    use smithay::utils::{Logical, Point};
+
+    use super::screenshot_tests::{set_up, viewer_loc};
+    use crate::tests::fixture::Fixture;
+    use crate::tests::input;
+
+    fn pick_at(f: &mut Fixture, pos: Point<f64, Logical>) -> Option<PickedColor> {
+        let (tx, rx) = async_channel::unbounded();
+        f.niri_state().move_cursor(pos);
+        f.niri_state().handle_pick_color(tx);
+        input::pointer_button(f, input::BTN_LEFT, true);
+        input::pointer_button(f, input::BTN_LEFT, false);
+        rx.try_recv().expect("the pick should have answered")
+    }
+
+    #[test]
+    fn egl_picking_over_the_viewed_picture_answers() {
+        let (mut f, viewer) = set_up((1920, 1080));
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        let loc = viewer_loc(&mut f, &viewer);
+
+        assert!(pick_at(&mut f, loc + Point::from((960., 540.))).is_some());
+    }
+
+    #[test]
+    fn egl_picking_without_projections_samples_the_output_under_the_pointer() {
+        let (mut f, viewer) = set_up((1920, 1080));
+        let loc = viewer_loc(&mut f, &viewer);
+
+        assert!(pick_at(&mut f, loc + Point::from((10., 540.))).is_some());
     }
 }

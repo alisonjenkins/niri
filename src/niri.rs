@@ -5243,8 +5243,12 @@ impl Niri {
         // A virtual output only gets the pointer while it is physically over it (a streaming
         // client's cursor); a desk cursor on a viewer that shows the output must not leak into
         // the output's own render or its stream (FR-017).
-        let pointer_belongs_here = !is_virtual_output(output) || self.pointer_is_over(output);
-        if include_pointer && self.pointer_visibility.is_visible() && pointer_belongs_here {
+        // Checked last: it locks the pointer, which a render from inside a pointer grab (the
+        // colour picker) already holds, so it must not run for a render without the pointer.
+        if include_pointer
+            && self.pointer_visibility.is_visible()
+            && (!is_virtual_output(output) || self.pointer_is_over(output))
+        {
             self.render_pointer(ctx.renderer, output, &mut |elem| push(elem.into()));
         }
 
