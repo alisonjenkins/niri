@@ -4216,11 +4216,13 @@ mod overview_band_tests {
 
 /// The band's column: its order, sizes, scrolling and clicks into view mode.
 mod overview_column_tests {
+    use niri_config::Config;
     use smithay::output::Output;
     use smithay::utils::{Logical, Point, Rectangle};
 
     use super::overview_band_tests::{
-        click, fill_workspaces, full_band, move_pointer_to, refresh, set_up, toggle_overview,
+        click, fill_workspaces, full_band, move_pointer_to, refresh, set_up, set_up_with,
+        toggle_overview,
     };
     use super::overview_tests::{map_window_on, output_named, tile_for, window_center_on};
     use crate::projection::{Band, ViewOrigin, Viewing};
@@ -4289,6 +4291,36 @@ mod overview_column_tests {
             .create_virtual_output(&mut state.niri, 1280, 800, 60, Some(name.to_string()))
             .unwrap();
         refresh(f);
+    }
+
+    #[test]
+    fn groups_follow_the_configured_output_order() {
+        let config = Config::parse_mem(
+            r#"
+            output "zeta" {
+                virtual-output
+                mode "1280x800"
+            }
+            output "alpha" {
+                virtual-output
+                mode "1280x800"
+            }
+            "#,
+        )
+        .unwrap();
+        // "mid" is not configured, so it goes after the configured ones.
+        let mut f = set_up_with(
+            config,
+            &[
+                ("mid", 1280, 800),
+                ("alpha", 1280, 800),
+                ("zeta", 1280, 800),
+            ],
+        );
+        let viewer = f.niri_output(1);
+        toggle_overview(&mut f);
+
+        assert_eq!(group_names(&mut f, &viewer), ["zeta", "alpha", "mid"]);
     }
 
     #[test]
