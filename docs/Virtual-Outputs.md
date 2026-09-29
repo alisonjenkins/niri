@@ -190,15 +190,17 @@ niri msg output steam mode 3840x2160@60
 
 Removing the `virtual-output` section removes the output on the next config reload. Outputs created over IPC are left alone by config reloads, since they belong to whoever asked for them.
 
-## Overview columns
+## Overview band
 
-Every virtual output that is on gets its own column in the overview, to the right of the physical monitor's own workspaces, labelled with the virtual output's name. That column is the virtual output's real overview: the same workspaces and windows, at the same zoom.
+While the overview is open and at least one virtual output is on, each physical monitor reserves a band at its right edge, 15% of the monitor's width, for virtual outputs. The monitor's own workspaces are laid out in the width left over, so none of its windows are drawn in, or receive input from, the band; a workspace with enough windows to reach the band's edge simply disappears under it there, and clicks in that area go to the band, matching what is seen. With no virtual output on, there is no band and the overview looks and behaves exactly as it always has. The band grows and shrinks with the overview's opening and closing animation.
 
-Dragging works in both directions and between any two outputs, physical or virtual: drag a window from a column onto one of the physical monitor's workspaces, or the other way round. Dropping into the gap between two workspaces in any column creates a workspace there, exactly as it does for a physical monitor. Clicking a workspace in a virtual output's column closes the overview and enters view mode on that output, with that workspace active. Clicking one of the physical monitor's own workspaces behaves as it always has.
+The band holds a single scrollable column: for each virtual output that is on, in configuration order (unconfigured outputs last, by name), the output's name followed by all of its workspaces, including its empty last one, each as a tile at the full width of the column. That keeps every workspace the same readable size no matter how many virtual outputs are on — the column just gets longer, not narrower. Each virtual output's active workspace is highlighted the same way the overview highlights a physical monitor's active workspace.
 
-A column is drawn on a solid black fill above the monitor's own workspaces, so windows scrolled off the edge of one of those workspaces disappear under the column rather than being drawn over it; clicks there go to the column, matching what is seen.
+Scroll the column with the mouse wheel or a three-finger swipe while the pointer is over the band; the usual four-finger swipe still opens and closes the overview itself. Clicking a window in a tile closes the overview, enters view mode on that virtual output with that workspace active, and focuses the window; clicking empty space in a tile does the same without focusing a window. Escape returns from a view entered this way, as it does from `view-output`. Clicking a name label, a gap, or the band's background does nothing and leaves the overview open.
 
-If the columns and the monitor's own workspaces do not all fit, the columns shrink to fit. The monitor's own workspaces keep their normal size and never move. A virtual output that is off has no column, and turning one on or off while the overview is open adds or removes its column without closing the overview.
+Dragging works between any two workspaces shown in the overview — physical to virtual, virtual to physical, and virtual to virtual, including between different virtual outputs — with the same insertion feedback as dragging between physical workspaces. Dropping on a virtual output's empty last tile creates a new workspace there holding the window. Dropping on the band's background, rather than on a tile, returns the window to where the drag started. Holding a drag near the band's top or bottom edge scrolls the column, so a far workspace can be reached without letting go.
+
+A virtual output turning on or off while the overview is open adds or removes its group from the column without closing the overview.
 
 ## View mode
 
@@ -229,7 +231,7 @@ While viewing, the virtual output's content fills the physical monitor as far as
 
 Pointer input on the monitor reaches the virtual output at the matching position: clicks, scrolling and focus changes go through to whatever is under that point. A click in the bars reaches nothing. Entering view mode makes the virtual output the active monitor, so window-management commands act on it instead of the physical one.
 
-Opening the overview while viewing shows the normal overview, with the physical monitor's own workspaces and every virtual output's column, including the one being viewed. Closing the overview returns to view mode, unless the physical monitor became the active monitor meanwhile.
+Opening the overview while viewing shows the normal overview, with the physical monitor's own workspaces and the band, including the output being viewed. Closing the overview returns to view mode, unless the physical monitor became the active monitor meanwhile.
 
 When view mode was entered by clicking a virtual output's workspace in the overview, pressing Escape (with no modifiers) ends it and returns the physical monitor to the workspace it had before; the label then reads "Viewing: `<name>` — Esc to return". That Escape never reaches the application. It is left alone while the overview, the screenshot UI, the window switcher or the lock screen is open, and while the focused application inhibits keyboard shortcuts. View mode entered with `view-output` passes Escape to the application as usual.
 
@@ -248,6 +250,28 @@ View mode ends on its own, with a one-line notice on the monitor, if the virtual
 | Virtual output is off | `virtual output "<name>" is off` |
 | No physical monitor to show it on | `no physical output to view "<name>" on` |
 
+### Event stream
+
+`niri msg event-stream` reports view mode and output changes, so a bar or script can follow them without polling.
+
+`ViewOutputChanged` is sent once for each of: `view-output <name>`, clicking a workspace or window in the band, `view-output` with no name, Escape in a view entered from the overview, the viewer becoming the active monitor again, and either output going away. Switching the viewed source sends one event with the new names; nothing is sent when `view-output` with no name is run while not viewing. A new subscriber receives the current state first.
+
+```json
+{"ViewOutputChanged":{"state":{"Viewing":{"viewer":"DP-2","source":"steam"}}}}
+{"ViewOutputChanged":{"state":"NotViewing"}}
+```
+
+```
+View output: steam on DP-2
+View output: none
+```
+
+`OutputsChanged` covers every output, physical and virtual. It is sent when the set of output names changes, or when any output turns on or off, carrying the full current list with the same details as `niri msg outputs`; a mode, scale, transform or position change alone does not send it. A new subscriber receives the current list first.
+
+```
+Outputs changed: DP-2 (on), steam (off)
+```
+
 ## Interaction with streams
 
 Showing a virtual output in the overview or in view mode never changes what the virtual output itself renders, and never interrupts a screencast or capture of it. The projection is a second render of the same content, layered on top of the physical monitor's own picture; the virtual output's own render path is untouched.
@@ -263,8 +287,8 @@ Hot corners always act on the physical monitor the pointer is really over, never
 Known limitations:
 
 - A remote client and the desk user can move the pointer on a virtual output at the same time; nothing arbitrates between them.
-- Content scaled to fit a physical monitor, or shrunk to fit an overview column, can look softer than at its native resolution.
-- Dragging inside a shrunk overview column measures the drag distance in the physical monitor's pixels, not the virtual output's own, so the drag moves slightly more or less than it visually looks like it should. Where you drop still lands correctly, since the drop target comes from the position, not the distance dragged.
+- Content scaled to fit a physical monitor, or scaled to fit a band tile, can look softer than at its native resolution.
+- Dragging inside a band tile measures the drag distance in the physical monitor's pixels, not the virtual output's own, so the drag moves slightly more or less than it visually looks like it should. Where you drop still lands correctly, since the drop target comes from the position, not the distance dragged.
 
 ## Limitations
 
