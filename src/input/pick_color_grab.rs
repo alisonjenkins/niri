@@ -36,7 +36,8 @@ impl PickColorGrab {
     }
 
     fn pick_color_at_point(location: Point<f64, Logical>, data: &mut State) -> Option<PickedColor> {
-        let (output, pos_within_output) = data.niri.output_under(location)?;
+        // Sample the physical output's own frame, which draws any projection as it is seen.
+        let (output, pos_within_output) = data.niri.physical_output_under(location)?;
         let output = output.clone();
 
         data.backend
