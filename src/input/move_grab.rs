@@ -241,6 +241,7 @@ impl MoveGrab {
                 else {
                     return true;
                 };
+                data.niri.overview_band_drag_motion(self.last_location);
                 if ongoing {
                     // FIXME: only redraw the previous and the new output.
                     data.niri.queue_redraw_all();

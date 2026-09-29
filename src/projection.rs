@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fmt;
+use std::time::Duration;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
@@ -383,6 +384,44 @@ pub fn scroll_to_show(
     };
 
     new_scroll.clamp(0., max_scroll)
+}
+
+/// How fast and which way a drag held at height `y` in a band of `height` scrolls its column,
+/// from -1 (up, at the top edge) to 1 (down, at the bottom edge), and 0 outside the
+/// `trigger_height` zones at either edge. The same zones as the physical monitor's DnD edge
+/// workspace switch.
+pub fn edge_scroll_factor(y: f64, height: f64, trigger_height: f64) -> f64 {
+    if !(y.is_finite() && height.is_finite() && trigger_height.is_finite()) || height <= 0. {
+        return 0.;
+    }
+    let y = y.clamp(0., height);
+    let trigger_height = trigger_height.clamp(0., height / 2.);
+    // Sanity check for trigger-height 0 or small bands.
+    if trigger_height < 0.01 {
+        return 0.;
+    }
+    let delta = if y < trigger_height {
+        -(trigger_height - y)
+    } else if height - y < trigger_height {
+        trigger_height - (height - y)
+    } else {
+        0.
+    };
+    delta / trigger_height
+}
+
+/// A window dragged over a band, which scrolls the column while held near its top or bottom.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BandEdgeScroll {
+    pub viewer: String,
+    /// The pointer's height within the band.
+    pub y: f64,
+    /// When the column last advanced.
+    pub last_time: Option<Duration>,
+    /// When the pointer entered an edge zone, for the start delay.
+    pub nonzero_start: Option<Duration>,
+    /// Whether the column is moving or about to, so frames must keep coming.
+    pub active: bool,
 }
 
 /// The band a physical monitor shows virtual outputs' workspaces in while the overview is open.
