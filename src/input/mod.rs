@@ -3344,7 +3344,11 @@ impl State {
                 .flatten()
             {
                 let ws_id = ws.id();
-                self.niri.activate_overview_workspace(&output, ws_id);
+                let input_output = self
+                    .niri
+                    .physical_output_at(pointer.current_location(), &output);
+                self.niri
+                    .activate_overview_workspace(&output, ws_id, &input_output);
 
                 // FIXME: granular.
                 self.niri.queue_redraw_all();
@@ -3975,9 +3979,6 @@ impl State {
                         }
                     } else if !tool.is_grabbed() {
                         if under.overview && !mod_down && under.output.is_some() {
-                            let (output, pos_within_output) = self.niri.output_under(pos).unwrap();
-                            let output = output.clone();
-
                             let mut matched_narrow = true;
                             let mut ws = self.niri.workspace_under(false, pos);
                             if ws.is_none() {
@@ -3996,17 +3997,16 @@ impl State {
                             };
                             let start_data = AnyStartData::TabletTool(start_data);
                             let start_timestamp = Duration::from_micros(event.time().micros());
-                            let grab = TouchOverviewGrab::new(
+                            if let Some(grab) = TouchOverviewGrab::new(
+                                self,
                                 start_data,
                                 start_timestamp,
-                                output,
-                                pos_within_output,
-                                self.niri.projection_scale_at(pos),
                                 ws_id,
                                 matched_narrow,
                                 window,
-                            );
-                            tool.set_grab(self, grab, time, serial, Focus::Clear);
+                            ) {
+                                tool.set_grab(self, grab, time, serial, Focus::Clear);
+                            }
                         } else if let Some((window, _)) = under.window {
                             self.niri.layout.activate_window(&window);
 
@@ -4618,9 +4618,6 @@ impl State {
             }
         } else if !handle.is_grabbed() {
             if under.overview && !mod_down && under.output.is_some() {
-                let (output, pos_within_output) = self.niri.output_under(pos).unwrap();
-                let output = output.clone();
-
                 let mut matched_narrow = true;
                 let mut ws = self.niri.workspace_under(false, pos);
                 if ws.is_none() {
@@ -4639,17 +4636,16 @@ impl State {
                 };
                 let start_data = AnyStartData::Touch(start_data);
                 let start_timestamp = Duration::from_micros(evt.time().micros());
-                let grab = TouchOverviewGrab::new(
+                if let Some(grab) = TouchOverviewGrab::new(
+                    self,
                     start_data,
                     start_timestamp,
-                    output,
-                    pos_within_output,
-                    self.niri.projection_scale_at(pos),
                     ws_id,
                     matched_narrow,
                     window,
-                );
-                handle.set_grab(self, grab, serial);
+                ) {
+                    handle.set_grab(self, grab, serial);
+                }
             } else if let Some((window, _)) = under.window {
                 self.niri.layout.activate_window(&window);
 
