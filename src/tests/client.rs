@@ -14,6 +14,11 @@ use smithay::reexports::wayland_protocols::ext::session_lock::v1::client::ext_se
 use single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1};
+use smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_confined_pointer_v1::ZwpConfinedPointerV1;
+use smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1;
+use smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::{
+    Lifetime, ZwpPointerConstraintsV1,
+};
 use smithay::reexports::wayland_protocols::wp::single_pixel_buffer;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
@@ -36,6 +41,8 @@ use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_display::WlDisplay;
 use wayland_client::protocol::wl_keyboard::{self, WlKeyboard};
 use wayland_client::protocol::wl_output::{self, WlOutput};
+use wayland_client::protocol::wl_pointer::WlPointer;
+use wayland_client::protocol::wl_region::WlRegion;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::{self, WlSeat};
 use wayland_client::protocol::wl_surface::{self, WlSurface};
@@ -68,6 +75,8 @@ pub struct State {
     pub viewporter: Option<WpViewporter>,
     pub ksim: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
     pub session_lock_manager: Option<ExtSessionLockManagerV1>,
+    pub pointer: Option<WlPointer>,
+    pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
 
     pub windows: Vec<Window>,
     pub layers: Vec<LayerSurface>,
@@ -269,6 +278,8 @@ impl Client {
             viewporter: None,
             ksim: None,
             session_lock_manager: None,
+            pointer: None,
+            pointer_constraints: None,
             windows: Vec::new(),
             layers: Vec::new(),
         };
@@ -319,6 +330,38 @@ impl Client {
 
     pub fn layer(&mut self, surface: &WlSurface) -> &mut LayerSurface {
         self.state.layer(surface)
+    }
+
+    fn pointer(&mut self) -> WlPointer {
+        let state = &mut self.state;
+        let seat = state.seats.keys().next().unwrap();
+        state
+            .pointer
+            .get_or_insert_with(|| seat.get_pointer(&self.qh, ()))
+            .clone()
+    }
+
+    /// Confines the pointer to `rect` (x, y, w, h) of `surface`.
+    pub fn confine_pointer(
+        &mut self,
+        surface: &WlSurface,
+        rect: (i32, i32, i32, i32),
+    ) -> ZwpConfinedPointerV1 {
+        let pointer = self.pointer();
+        let compositor = self.state.compositor.as_ref().unwrap();
+        let region = compositor.create_region(&self.qh, ());
+        region.add(rect.0, rect.1, rect.2, rect.3);
+        let constraints = self.state.pointer_constraints.as_ref().unwrap();
+        let confined = constraints.confine_pointer(
+            surface,
+            &pointer,
+            Some(&region),
+            Lifetime::Persistent,
+            &self.qh,
+            (),
+        );
+        region.destroy();
+        confined
     }
 
     pub fn lock_session(&mut self) -> ExtSessionLockV1 {
@@ -652,6 +695,9 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == ExtSessionLockManagerV1::interface().name {
                     let version = min(version, ExtSessionLockManagerV1::interface().version);
                     state.session_lock_manager = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ZwpPointerConstraintsV1::interface().name {
+                    let version = min(version, ZwpPointerConstraintsV1::interface().version);
+                    state.pointer_constraints = Some(registry.bind(name, version, qh, ()));
                 } else if interface == WlOutput::interface().name {
                     let version = min(version, WlOutput::interface().version);
                     let output = registry.bind(name, version, qh, ());
@@ -1077,5 +1123,67 @@ impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for State {
             zwp_keyboard_shortcuts_inhibitor_v1::Event::Inactive => (),
             _ => unreachable!(),
         }
+    }
+}
+
+impl Dispatch<WlPointer, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlPointer,
+        _event: <WlPointer as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WlRegion, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlRegion,
+        _event: <WlRegion as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        unreachable!()
+    }
+}
+
+impl Dispatch<ZwpPointerConstraintsV1, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpPointerConstraintsV1,
+        _event: <ZwpPointerConstraintsV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        unreachable!()
+    }
+}
+
+impl Dispatch<ZwpLockedPointerV1, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpLockedPointerV1,
+        _event: <ZwpLockedPointerV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpConfinedPointerV1, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpConfinedPointerV1,
+        _event: <ZwpConfinedPointerV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
     }
 }

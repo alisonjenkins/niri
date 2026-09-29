@@ -2618,17 +2618,20 @@ impl State {
         if let Some((focus_surface, region)) = pointer_confined {
             let mut prevent = false;
 
-            // Prevent the pointer from leaving the focused surface.
-            if Some(&focus_surface.0) != under.surface.as_ref().map(|(s, _)| s) {
-                prevent = true;
-            }
-
-            // Prevent the pointer from leaving the confine region, if any.
-            if let Some(region) = region {
-                let new_pos_within_surface = new_pos - focus_surface.1;
-                if !region.contains(new_pos_within_surface.to_i32_round()) {
-                    prevent = true;
+            // Prevent the pointer from leaving the focused surface, and from leaving the confine
+            // region, if any. The surface-local position comes from the lookup at new_pos: the
+            // focus location was synthesized for the old position, which is only exact there
+            // when the surface is shown through a scaled projection.
+            match &under.surface {
+                Some((surface, loc)) if *surface == focus_surface.0 => {
+                    if let Some(region) = region {
+                        let new_pos_within_surface = new_pos - *loc;
+                        if !region.contains(new_pos_within_surface.to_i32_round()) {
+                            prevent = true;
+                        }
+                    }
                 }
+                _ => prevent = true,
             }
 
             if prevent {
