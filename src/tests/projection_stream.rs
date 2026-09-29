@@ -128,7 +128,7 @@ fn egl_source_render_is_unaffected_by_overview_and_view_projections() {
     let baseline = source_geometries(&mut f, &steam);
     assert!(!baseline.is_empty(), "expected the mapped window to render");
 
-    // (b) Overview open: an Overview projection now exists for steam.
+    // (b) Overview open: a tile of steam now exists in the viewer's band.
     f.niri().layout.toggle_overview();
     f.niri_complete_animations();
     assert!(f.niri().layout.is_overview_open());
@@ -137,7 +137,7 @@ fn egl_source_render_is_unaffected_by_overview_and_view_projections() {
         .projection_state
         .projections
         .iter()
-        .any(|p| p.source == "steam" && p.kind == ProjectionKind::Overview));
+        .any(|p| p.source == "steam" && matches!(p.kind, ProjectionKind::Tile { .. })));
 
     let with_overview_projection = source_geometries(&mut f, &steam);
     let saved = std::mem::take(&mut f.niri().projection_state.projections);
@@ -147,7 +147,7 @@ fn egl_source_render_is_unaffected_by_overview_and_view_projections() {
     assert_eq!(
         with_overview_projection, overview_projection_cleared,
         "the source's own overview-mode rendering must not depend on whether \
-         an Overview projection of it exists"
+         a tile of it exists"
     );
 
     f.niri().layout.toggle_overview();

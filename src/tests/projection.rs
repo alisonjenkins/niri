@@ -3,8 +3,8 @@
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::projection::{
-    band_rect, column_layout, letterbox, overview_columns, scroll_to_show, ColumnSource,
-    Projection, ProjectionError, ProjectionKind, BAND_FRACTION,
+    band_rect, column_layout, letterbox, scroll_to_show, ColumnSource, Projection, ProjectionError,
+    ProjectionKind, BAND_FRACTION,
 };
 
 fn rect(x: f64, y: f64, w: f64, h: f64) -> Rectangle<f64, Logical> {
@@ -216,97 +216,6 @@ fn letterbox_tall_source_into_wide_viewer() {
     assert!((region.size.w - 607.5).abs() < 1e-9);
     assert!((region.loc.y - 0.).abs() < 1e-9);
     assert!((region.loc.x - (1920. - 607.5) / 2.).abs() < 1e-9);
-}
-
-#[test]
-fn overview_columns_zero_sources_is_empty() {
-    let strip = rect(600., 0., 800., 1000.);
-
-    assert!(overview_columns(strip, size(2000., 1000.), &[]).is_empty());
-}
-
-#[test]
-fn overview_columns_one_source_starts_one_gap_right_of_the_strip() {
-    let viewer_size = size(3000., 1000.);
-    let strip = rect(1000., 0., 1000., 1000.);
-
-    let regions = overview_columns(strip, viewer_size, &[size(800., 600.)]);
-
-    // gap = 0.05 * 1000. The strip is not moved; the region sits at scale 1,
-    // centred vertically.
-    assert_eq!(regions, vec![rect(2050., 200., 800., 600.)]);
-}
-
-#[test]
-fn overview_columns_three_sources_that_fit_keep_scale_one() {
-    let viewer_size = size(5120., 1440.);
-    let strip = rect(2000., 0., 800., 1440.);
-    let sources = [size(640., 400.), size(960., 540.), size(200., 100.)];
-
-    let regions = overview_columns(strip, viewer_size, &sources);
-
-    // gap = 72. Room = 5120 - 2800 - 3 * 72 - 72 = 2032 >= 1800.
-    assert_eq!(
-        regions,
-        vec![
-            rect(2872., 520., 640., 400.),
-            rect(3584., 450., 960., 540.),
-            rect(4616., 670., 200., 100.),
-        ]
-    );
-}
-
-#[test]
-fn overview_columns_overflow_shrinks_only_sources_to_fit() {
-    let viewer_size = size(2000., 1000.);
-    let strip = rect(500., 0., 500., 1000.);
-    let sources = [size(600., 600.), size(600., 600.), size(600., 600.)];
-
-    let regions = overview_columns(strip, viewer_size, &sources);
-
-    // gap = 50. Room = 2000 - 1000 (strip right) - 3 * 50 - 50 (margin) = 800,
-    // so each 600-wide source shrinks to 800 / 3.
-    assert_eq!(regions.len(), 3);
-    let w = 800. / 3.;
-    let mut x = 1050.;
-    for r in &regions {
-        assert!((r.loc.x - x).abs() < 1e-9, "{regions:?}");
-        assert!((r.size.w - w).abs() < 1e-9, "{regions:?}");
-        assert!((r.size.h - w).abs() < 1e-9, "{regions:?}");
-        assert!((r.loc.y - (1000. - w) / 2.).abs() < 1e-9, "{regions:?}");
-        x += w + 50.;
-    }
-    let last = regions[2];
-    assert!(
-        (last.loc.x + last.size.w - 1950.).abs() < 1e-9,
-        "{regions:?}"
-    );
-}
-
-#[test]
-fn overview_columns_shrink_stops_at_minimum_scale() {
-    let viewer_size = size(2000., 1000.);
-    let strip = rect(10., 0., 1980., 1000.);
-
-    let regions = overview_columns(strip, viewer_size, &[size(600., 400.)]);
-
-    // No room at all, so the source is clamped to scale 0.05.
-    assert_eq!(regions, vec![rect(2040., 490., 30., 20.)]);
-}
-
-#[test]
-fn overview_columns_zoom_one_places_regions_off_screen() {
-    let viewer_size = size(2000., 1000.);
-    let strip = rect(0., 0., 2000., 1000.);
-    let sources = [size(400., 300.), size(200., 100.)];
-
-    let regions = overview_columns(strip, viewer_size, &sources);
-
-    assert_eq!(regions.len(), 2);
-    for (r, source) in regions.iter().zip(&sources) {
-        assert!(r.loc.x >= viewer_size.w, "{regions:?}");
-        assert_eq!(r.size, *source);
-    }
 }
 
 mod band_tests {
@@ -944,18 +853,36 @@ mod overview_tests {
         assert!(f.niri().layout.is_overview_open());
     }
 
-    fn projection_for(niri: &Niri, source: &str) -> Projection {
+    /// The band tile showing workspace `ws_idx` of `source`.
+    pub(super) fn tile_for(niri: &Niri, source: &str, ws_idx: usize) -> Projection {
+        let workspace = niri
+            .layout
+            .monitors()
+            .find(|mon| mon.output().name() == source)
+            .and_then(|mon| mon.workspaces_with_render_geo_cull(false).nth(ws_idx))
+            .map(|(ws, _)| ws.id())
+            .unwrap_or_else(|| panic!("{source} has no workspace {ws_idx}"));
         niri.projection_state
             .projections
             .iter()
-            .find(|p| p.source == source && p.kind == ProjectionKind::Overview)
+            .find(|p| p.source == source && p.kind == ProjectionKind::Tile { workspace })
             .unwrap_or_else(|| {
                 panic!(
-                    "no overview projection for {source}: {:?}",
+                    "no tile for workspace {ws_idx} of {source}: {:?}",
                     niri.projection_state.projections
                 )
             })
             .clone()
+    }
+
+    /// The index of the workspace of `output` holding `window`.
+    fn workspace_of(niri: &Niri, output: &Output, window: &Window) -> usize {
+        niri.layout
+            .monitor_for_output(output)
+            .unwrap()
+            .workspaces_with_render_geo_cull(false)
+            .position(|(ws, _)| ws.has_window(window))
+            .unwrap()
     }
 
     fn viewer_origin(niri: &Niri, viewer: &Output) -> Point<f64, Logical> {
@@ -996,7 +923,8 @@ mod overview_tests {
         let viewer = f.niri_output(1);
         let source_output = output_named(f, source);
         let niri = f.niri();
-        let projection = projection_for(niri, source);
+        let ws_idx = workspace_of(niri, &source_output, window);
+        let projection = tile_for(niri, source, ws_idx);
         let center = window_center_on(niri, &source_output, window);
         projection.to_viewer(center) + viewer_origin(niri, &viewer)
     }
@@ -1047,9 +975,6 @@ mod overview_tests {
         let window = map_window_on(&mut f, id, &steam, 400, 300);
         open_overview(&mut f);
 
-        let projection = projection_for(f.niri(), "steam");
-        assert!((projection.scale() - 1.).abs() < 1e-9, "{projection:?}");
-
         let p = projected_window_center(&mut f, "steam", &window);
         let (output, _) = f.niri().output_under(p).unwrap();
         assert_eq!(output, &steam);
@@ -1063,14 +988,14 @@ mod overview_tests {
     }
 
     #[test]
-    fn overview_hit_test_reaches_a_window_in_a_shrunk_column() {
+    fn overview_hit_test_reaches_a_window_in_a_small_tile() {
         let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
         let id = f.add_client();
         let steam = output_named(&mut f, "steam");
         let window = map_window_on(&mut f, id, &steam, 400, 300);
         open_overview(&mut f);
 
-        let projection = projection_for(f.niri(), "steam");
+        let projection = tile_for(f.niri(), "steam", 0);
         assert!(projection.scale() < 1., "{projection:?}");
 
         let p = projected_window_center(&mut f, "steam", &window);
@@ -1125,7 +1050,7 @@ mod overview_tests {
     }
 
     #[test]
-    fn drag_from_source_column_to_viewer_workspace() {
+    fn drag_from_a_source_tile_to_a_viewer_workspace() {
         let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
         let id = f.add_client();
         let steam = output_named(&mut f, "steam");
@@ -1146,7 +1071,7 @@ mod overview_tests {
     }
 
     #[test]
-    fn drag_from_viewer_workspace_into_source_column() {
+    fn drag_from_a_viewer_workspace_into_a_source_tile() {
         let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
         let id = f.add_client();
         let steam = output_named(&mut f, "steam");
@@ -1156,7 +1081,7 @@ mod overview_tests {
 
         let niri = f.niri();
         let from = window_center_on(niri, &viewer, &window) + viewer_origin(niri, &viewer);
-        let projection = projection_for(niri, "steam");
+        let projection = tile_for(niri, "steam", 0);
         let mon = niri.layout.monitor_for_output(&steam).unwrap();
         let (_, ws_geo) = mon.workspaces_with_render_geo().next().unwrap();
         let to = projection.to_viewer(center(ws_geo)) + viewer_origin(niri, &viewer);
@@ -1168,7 +1093,7 @@ mod overview_tests {
     }
 
     #[test]
-    fn drop_in_gap_between_source_workspaces_creates_a_workspace() {
+    fn drop_on_the_empty_last_source_tile_creates_a_workspace() {
         let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
         let id = f.add_client();
         let steam = output_named(&mut f, "steam");
@@ -1188,27 +1113,26 @@ mod overview_tests {
 
         let niri = f.niri();
         let from = window_center_on(niri, &viewer, &dragged) + viewer_origin(niri, &viewer);
-        let projection = projection_for(niri, "steam");
+        let projection = tile_for(niri, "steam", 2);
         let mon = niri.layout.monitor_for_output(&steam).unwrap();
-        let mut geos = mon.workspaces_render_geo();
-        let ws0 = geos.next().unwrap();
-        let ws1 = geos.next().unwrap();
-        let gap_center = Point::from((center(ws0).x, (ws0.loc.y + ws0.size.h + ws1.loc.y) / 2.));
-        let to = projection.to_viewer(gap_center) + viewer_origin(niri, &viewer);
+        let last = mon.workspaces_render_geo().nth(2).unwrap();
+        // Near the top of the last tile, which the column may cut off lower down.
+        let target = Point::from((center(last).x, last.loc.y + 40.));
+        let to = projection.to_viewer(target) + viewer_origin(niri, &viewer);
 
         drag(&mut f, &dragged, from, to);
 
         assert_eq!(
             workspace_windows(f.niri(), &steam),
-            vec![vec![a], vec![dragged], vec![b], vec![]]
+            vec![vec![a], vec![b], vec![dragged], vec![]]
         );
     }
 
     #[test]
-    fn source_column_follows_source_removal_and_recreation_without_closing_overview() {
+    fn source_tiles_follow_source_removal_and_recreation_without_closing_overview() {
         let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
         open_overview(&mut f);
-        projection_for(f.niri(), "steam");
+        tile_for(f.niri(), "steam", 0);
 
         let state = f.niri_state();
         state
@@ -1226,11 +1150,11 @@ mod overview_tests {
             .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
             .unwrap();
         assert!(f.niri().layout.is_overview_open());
-        projection_for(f.niri(), "steam");
+        tile_for(f.niri(), "steam", 0);
     }
 
     #[test]
-    fn reorder_windows_inside_the_source_column() {
+    fn reorder_windows_inside_a_source_tile() {
         let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
         let id = f.add_client();
         let steam = output_named(&mut f, "steam");
@@ -1245,7 +1169,7 @@ mod overview_tests {
 
         let from = projected_window_center(&mut f, "steam", &a);
         let niri = f.niri();
-        let projection = projection_for(niri, "steam");
+        let projection = tile_for(niri, "steam", 0);
         let mon = niri.layout.monitor_for_output(&steam).unwrap();
         let zoom = mon.overview_zoom();
         let (ws, ws_geo) = mon.workspaces_with_render_geo().next().unwrap();
@@ -1264,7 +1188,7 @@ mod overview_tests {
     }
 
     #[test]
-    fn scrolling_a_source_column_switches_its_workspaces_only() {
+    fn scrolling_a_source_tile_switches_its_workspaces_only() {
         let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
         let id = f.add_client();
         let steam = output_named(&mut f, "steam");
@@ -1284,8 +1208,8 @@ mod overview_tests {
             .unwrap()
             .active_workspace_idx();
 
-        // A point inside the lower (second) steam workspace in the column.
-        let projection = projection_for(niri, "steam");
+        // A point inside the second steam workspace's tile.
+        let projection = tile_for(niri, "steam", 1);
         let ws1 = steam_mon.workspaces_render_geo().nth(1).unwrap();
         let lower = Point::from((center(ws1).x, ws1.loc.y + 10.));
         let p = projection.to_viewer(lower) + viewer_origin(niri, &viewer);
@@ -1333,7 +1257,7 @@ mod overview_tests {
     }
 
     #[test]
-    fn every_enabled_source_gets_its_own_column() {
+    fn every_enabled_source_gets_its_own_tiles() {
         let mut f = set_up((5120, 1440), &[("steam", 1280, 800), ("aux", 1920, 1080)]);
         let id = f.add_client();
         let steam = output_named(&mut f, "steam");
@@ -1343,19 +1267,19 @@ mod overview_tests {
         open_overview(&mut f);
 
         let niri = f.niri();
-        let steam_region = projection_for(niri, "steam").region;
-        let aux_region = projection_for(niri, "aux").region;
+        let steam_region = tile_for(niri, "steam", 0).region;
+        let aux_region = tile_for(niri, "aux", 0).region;
         assert!(
             steam_region.intersection(aux_region).is_none(),
             "{steam_region:?} overlaps {aux_region:?}"
         );
 
         for (name, output, window) in [("steam", &steam, &on_steam), ("aux", &aux, &on_aux)] {
-            let region = projection_for(f.niri(), name).region;
+            let region = tile_for(f.niri(), name, 0).region;
             let viewer = f.niri_output(1);
             let centre = center(region) + viewer_origin(f.niri(), &viewer);
             let (hit, _) = f.niri().output_under(centre).unwrap();
-            assert_eq!(hit, output, "column centre of {name}");
+            assert_eq!(hit, output, "tile centre of {name}");
 
             let p = projected_window_center(&mut f, name, window);
             let contents = f.niri().contents_under(p);
@@ -1869,7 +1793,10 @@ mod view_tests {
             .iter()
             .map(|p| p.kind)
             .collect();
-        assert_eq!(kinds, vec![ProjectionKind::Overview]);
+        assert!(
+            matches!(kinds[..], [ProjectionKind::Tile { .. }]),
+            "{kinds:?}"
+        );
         assert!(viewing(&mut f).is_some());
 
         f.niri().layout.toggle_overview();
@@ -1924,18 +1851,16 @@ mod view_tests {
 }
 
 mod render_tests {
-    use niri_config::Action;
     use smithay::backend::renderer::element::Element as _;
     use smithay::backend::renderer::gles::GlesRenderer;
     use smithay::output::Output;
-    use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
+    use smithay::utils::{Logical, Physical, Rectangle, Scale};
 
-    use super::overview_tests::map_window_on;
+    use super::overview_band_tests::{full_band, tiles};
     use crate::niri::OutputRenderElements;
     use crate::projection::{Projection, ProjectionKind};
     use crate::render_helpers::{RenderCtx, RenderTarget};
     use crate::tests::fixture::Fixture;
-    use crate::tests::input;
 
     fn set_up(sources: &[(&str, u16, u16)]) -> Fixture {
         let mut f = Fixture::new();
@@ -1994,13 +1919,13 @@ mod render_tests {
             .unwrap()
     }
 
-    fn overview_projections(f: &mut Fixture) -> Vec<Projection> {
+    fn tile_projections(f: &mut Fixture) -> Vec<Projection> {
         let projections: Vec<_> = f
             .niri()
             .projection_state
             .projections
             .iter()
-            .filter(|p| p.kind == ProjectionKind::Overview)
+            .filter(|p| matches!(p.kind, ProjectionKind::Tile { .. }))
             .cloned()
             .collect();
         assert!(!projections.is_empty());
@@ -2012,14 +1937,15 @@ mod render_tests {
     }
 
     #[test]
-    fn egl_overview_renders_each_source_inside_its_region() {
+    fn egl_overview_renders_each_tile_inside_its_region() {
         let mut f = set_up(&[("steam", 1280, 800), ("aux", 1920, 1080)]);
         let viewer = f.niri_output(1);
         let scale = Scale::from(viewer.current_scale().fractional_scale());
-        let projections = overview_projections(&mut f);
-        let regions: Vec<_> = projections
+        let band = full_band();
+        let regions: Vec<_> = tile_projections(&mut f)
             .iter()
-            .map(|p| physical(p.region, scale))
+            .filter_map(|p| p.region.intersection(band))
+            .map(|region| physical(region, scale))
             .collect();
 
         let elements = render(&mut f, &viewer);
@@ -2044,11 +1970,11 @@ mod render_tests {
     }
 
     #[test]
-    fn egl_overview_labels_each_column_with_its_source_name() {
+    fn egl_overview_labels_each_group_with_its_source_name() {
         let mut f = set_up(&[("steam", 1280, 800), ("aux", 1920, 1080)]);
         let viewer = f.niri_output(1);
         let scale = Scale::from(viewer.current_scale().fractional_scale());
-        let projections = overview_projections(&mut f);
+        let band = physical(full_band(), scale);
 
         let elements = render(&mut f, &viewer);
         let textures: Vec<_> = elements
@@ -2057,16 +1983,15 @@ mod render_tests {
             .map(|e| e.geometry(scale))
             .collect();
 
-        for projection in &projections {
-            let region = physical(projection.region, scale);
+        for source in ["steam", "aux"] {
+            let first = physical(tiles(&mut f, source)[0].region, scale);
             assert!(
                 textures.iter().any(|geo| {
-                    geo.loc.y + geo.size.h <= region.loc.y
-                        && geo.loc.x >= region.loc.x
-                        && geo.loc.x + geo.size.w <= region.loc.x + region.size.w
+                    geo.loc.y + geo.size.h <= first.loc.y
+                        && first.loc.y - (geo.loc.y + geo.size.h) < 24
+                        && band.contains_rect(*geo)
                 }),
-                "no label above the {} column {region:?}: {textures:?}",
-                projection.source
+                "no label right above {source}'s first tile {first:?}: {textures:?}"
             );
         }
     }
@@ -2154,79 +2079,6 @@ mod render_tests {
         let elements = render(&mut f, &viewer);
 
         assert_unique_ids(&elements);
-    }
-
-    /// A viewer point inside steam's column where one of the viewer's own windows, scrolled
-    /// off its workspace to the right, is also laid out.
-    fn overflow_point(f: &mut Fixture, viewer: &Output) -> Point<f64, Logical> {
-        let region = overview_projections(f)
-            .into_iter()
-            .find(|p| p.source == "steam")
-            .unwrap()
-            .region;
-        let niri = f.niri();
-        (0..20)
-            .flat_map(|i| (0..20).map(move |j| (i, j)))
-            .map(|(i, j)| {
-                region.loc
-                    + Point::from((
-                        region.size.w * (f64::from(i) + 0.5) / 20.,
-                        region.size.h * (f64::from(j) + 0.5) / 20.,
-                    ))
-            })
-            .find(|p| niri.layout.window_under(viewer, *p).is_some())
-            .unwrap_or_else(|| panic!("no viewer window overflows into the column {region:?}"))
-    }
-
-    #[test]
-    fn egl_a_viewer_window_overflowing_into_a_column_is_drawn_under_it() {
-        let mut f = Fixture::new();
-        f.niri_state().backend.headless().add_renderer().unwrap();
-        f.add_output(1, (5120, 1440));
-        let viewer = f.niri_output(1);
-        let state = f.niri_state();
-        state
-            .backend
-            .headless()
-            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
-            .unwrap();
-        let id = f.add_client();
-        for _ in 0..6 {
-            map_window_on(&mut f, id, &viewer, 1600, 600);
-        }
-        f.niri_state().do_action(Action::FocusColumnFirst, false);
-        f.niri().layout.toggle_overview();
-        f.niri_complete_animations();
-        f.niri_state().refresh_and_flush_clients();
-        let point = overflow_point(&mut f, &viewer);
-
-        // Elements are front to back, so the first one covering the point is what is seen.
-        let scale = Scale::from(viewer.current_scale().fractional_scale());
-        let pixel = Rectangle::new(point.to_physical_precise_round(scale), Size::from((1, 1)));
-        let elements = render(&mut f, &viewer);
-        let top = elements
-            .iter()
-            .find(|e| e.geometry(scale).contains_rect(pixel))
-            .unwrap();
-        assert!(
-            !matches!(top, OutputRenderElements::Monitor(_)),
-            "the viewer's own window is drawn over steam's column at {point:?}"
-        );
-
-        // The click lands where the picture says: steam's column.
-        let target = point - f.niri().seat.get_pointer().unwrap().current_location();
-        input::pointer_motion(&mut f, target);
-        assert_eq!(
-            f.niri().pointer_contents.output.as_ref().map(|o| o.name()),
-            Some("steam".to_string())
-        );
-        input::pointer_button(&mut f, input::BTN_LEFT, true);
-        input::pointer_button(&mut f, input::BTN_LEFT, false);
-        f.niri_complete_animations();
-        assert_eq!(
-            f.niri().layout.active_output().map(|o| o.name()),
-            Some("steam".to_string())
-        );
     }
 }
 
@@ -2500,7 +2352,7 @@ mod input_tests {
     use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
     use wayland_client::protocol::wl_surface::WlSurface;
 
-    use super::overview_tests::{map_window_on, output_named, window_center_on};
+    use super::overview_tests::{map_window_on, output_named, tile_for, window_center_on};
     use crate::input::move_grab::MoveGrab;
     use crate::input::AnyStartData;
     use crate::layout::HitType;
@@ -2606,14 +2458,8 @@ mod input_tests {
         assert!(f.niri().layout.is_overview_open());
     }
 
-    fn overview_projection(f: &mut Fixture, source: &str) -> Projection {
-        f.niri()
-            .projection_state
-            .projections
-            .iter()
-            .find(|p| p.kind == ProjectionKind::Overview && p.source == source)
-            .unwrap()
-            .clone()
+    fn first_tile(f: &mut Fixture, source: &str) -> Projection {
+        tile_for(f.niri(), source, 0)
     }
 
     fn center(rect: Rectangle<f64, Logical>) -> Point<f64, Logical> {
@@ -2621,12 +2467,12 @@ mod input_tests {
     }
 
     #[test]
-    fn right_drag_in_a_source_column_keeps_the_pointer_on_the_viewer() {
+    fn right_drag_in_a_source_tile_keeps_the_pointer_on_the_viewer() {
         let mut f = set_up_with(Config::default(), (5120, 1440), &[("steam", 1280, 800)]);
         let viewer = f.niri_output(1);
         open_overview(&mut f);
         let viewer_geo = geometry(&mut f, &viewer);
-        let start = center(overview_projection(&mut f, "steam").region) + viewer_geo.loc;
+        let start = center(first_tile(&mut f, "steam").region) + viewer_geo.loc;
         f.niri_state().move_cursor(start);
 
         input::pointer_button(&mut f, input::BTN_RIGHT, true);
@@ -2707,22 +2553,20 @@ mod input_tests {
         f.niri_state().move_cursor(center(mouse_geo));
 
         let niri = f.niri();
+        let steam_mon = niri.layout.monitor_for_output(&steam).unwrap();
+        // The empty workspace below the window's.
+        let (ws, ws1) = steam_mon
+            .workspaces_with_render_geo_cull(false)
+            .nth(1)
+            .unwrap();
+        let workspace = ws.id();
         let projection = niri
             .projection_state
             .projections
             .iter()
-            .find(|p| p.source == "steam" && p.viewer == tapped.name())
+            .find(|p| p.viewer == tapped.name() && p.kind == ProjectionKind::Tile { workspace })
             .unwrap()
             .clone();
-        // The empty workspace below the window's.
-        let ws1 = niri
-            .layout
-            .monitor_for_output(&steam)
-            .unwrap()
-            .workspaces_render_geo()
-            .nth(1)
-            .unwrap();
-        // Its top edge; the column crops the rest of it.
         let tap = projection.to_viewer(Point::from((center(ws1).x, ws1.loc.y + 40.)));
         let tapped_geo = geometry(&mut f, &tapped);
         input::touch_tap(
@@ -2788,12 +2632,7 @@ mod input_tests {
         let on_viewer = if output == viewer {
             local
         } else {
-            niri.projection_state
-                .projections
-                .iter()
-                .find(|p| p.kind == ProjectionKind::Overview && p.source == output.name())
-                .unwrap()
-                .to_viewer(local)
+            tile_for(niri, &output.name(), idx).to_viewer(local)
         };
         on_viewer + viewer_geo.loc
     }
@@ -2959,7 +2798,7 @@ mod input_tests {
         match origin {
             ViewOrigin::Overview => {
                 toggle_overview(&mut f);
-                let projection = overview_projection(&mut f, "steam");
+                let projection = first_tile(&mut f, "steam");
                 let target = projection.to_viewer(window_center_on(f.niri(), &steam, &window))
                     + geometry(&mut f, &viewer).loc;
                 move_pointer_to(&mut f, target);
@@ -3164,7 +3003,7 @@ mod input_tests {
     }
 
     #[test]
-    fn the_viewers_top_layer_takes_input_over_overview_columns() {
+    fn the_viewers_top_layer_takes_input_over_the_overview_band() {
         let mut f = set_up_with(Config::default(), (5120, 1440), &[("steam", 1280, 800)]);
         let viewer = f.niri_output(1);
         let id = f.add_client();
@@ -3172,7 +3011,7 @@ mod input_tests {
         map_window_on(&mut f, id, &steam, 1280, 800);
         f.niri().layout.focus_output(&viewer);
 
-        // A bar down the viewer's right side, covering where the steam column is drawn.
+        // A bar down the viewer's right side, covering the band with steam's tiles.
         let layer = f.client(id).create_layer(None, Layer::Top, "bar");
         let surface = layer.surface.clone();
         layer.set_configure_props(LayerConfigureProps {
@@ -3190,18 +3029,18 @@ mod input_tests {
 
         open_overview(&mut f);
         let viewer_geo = geometry(&mut f, &viewer);
-        let column = overview_projection(&mut f, "steam").region;
+        let tile = first_tile(&mut f, "steam").region;
         assert!(
-            column.loc.x >= 5120. - 3000.,
-            "the bar does not cover the column {column:?}"
+            tile.loc.x >= 5120. - 3000.,
+            "the bar does not cover the tile {tile:?}"
         );
-        f.niri_state().move_cursor(center(column) + viewer_geo.loc);
+        f.niri_state().move_cursor(center(tile) + viewer_geo.loc);
         input::pointer_motion(&mut f, (1., 0.));
 
         let contents = &f.niri().pointer_contents;
         assert!(
             contents.layer.is_some(),
-            "the top-layer bar drawn above the column lost the pointer to {:?}",
+            "the top-layer bar drawn above the band lost the pointer to {:?}",
             contents.output.as_ref().map(|o| o.name())
         );
         assert_eq!(contents.output.as_ref(), Some(&viewer));
@@ -3305,8 +3144,8 @@ mod input_tests {
     }
 
     #[test]
-    fn right_drag_in_a_shrunk_source_column_scrolls_the_source_at_projection_scale() {
-        // A 4K source next to a 1080p viewer's strip only fits shrunk.
+    fn right_drag_in_a_shrunk_source_tile_scrolls_the_source_at_projection_scale() {
+        // A 4K source's tile in a 1080p viewer's band is far smaller than its workspace.
         let mut f = set_up_with(Config::default(), (1920, 1080), &[("steam", 3840, 2160)]);
         let viewer = f.niri_output(1);
         let id = f.add_client();
@@ -3316,9 +3155,9 @@ mod input_tests {
         }
         f.niri().layout.focus_output(&viewer);
         open_overview(&mut f);
-        let projection = overview_projection(&mut f, "steam");
+        let projection = first_tile(&mut f, "steam");
         let scale = projection.scale();
-        assert!(scale < 1., "the steam column is not shrunk: {projection:?}");
+        assert!(scale < 1., "the steam tile is not shrunk: {projection:?}");
         let zoom = f.niri().layout.overview_zoom();
         let viewer_geo = geometry(&mut f, &viewer);
         f.niri_state()
@@ -3516,14 +3355,22 @@ mod screenshot_tests {
             .to_f64()
     }
 
-    fn region_of(f: &mut Fixture, kind: ProjectionKind) -> Rectangle<f64, Logical> {
+    fn region_of(f: &mut Fixture, is_kind: fn(&ProjectionKind) -> bool) -> Rectangle<f64, Logical> {
         f.niri()
             .projection_state
             .projections
             .iter()
-            .find(|p| p.kind == kind && p.source == "steam")
+            .find(|p| is_kind(&p.kind) && p.source == "steam")
             .unwrap()
             .region
+    }
+
+    fn view(kind: &ProjectionKind) -> bool {
+        *kind == ProjectionKind::View
+    }
+
+    fn tile(kind: &ProjectionKind) -> bool {
+        matches!(kind, ProjectionKind::Tile { .. })
     }
 
     fn open_screenshot_ui(f: &mut Fixture) {
@@ -3561,7 +3408,7 @@ mod screenshot_tests {
         let (mut f, viewer) = set_up((1920, 1080));
         f.niri().start_viewing("steam").unwrap();
         f.niri_complete_animations();
-        let region = region_of(&mut f, ProjectionKind::View);
+        let region = region_of(&mut f, view);
         open_screenshot_ui(&mut f);
 
         let start = region.loc + Point::from((200., 100.));
@@ -3610,12 +3457,12 @@ mod screenshot_tests {
     }
 
     #[test]
-    fn egl_dragging_in_the_screenshot_ui_over_an_overview_column_selects_on_the_viewer() {
+    fn egl_dragging_in_the_screenshot_ui_over_a_band_tile_selects_on_the_viewer() {
         let (mut f, viewer) = set_up((5120, 1440));
         f.niri().layout.toggle_overview();
         f.niri_complete_animations();
         assert!(f.niri().layout.is_overview_open());
-        let region = region_of(&mut f, ProjectionKind::Overview);
+        let region = region_of(&mut f, tile);
         open_screenshot_ui(&mut f);
 
         let start = region.loc + region.size.downscale(2.).to_point();
@@ -3624,7 +3471,7 @@ mod screenshot_tests {
         assert_eq!(
             selection(&mut f),
             (viewer.name(), expected),
-            "the drag should select on the viewer, not in the projected column's source"
+            "the drag should select on the viewer, not in the tile's source"
         );
     }
 
@@ -3635,7 +3482,7 @@ mod screenshot_tests {
         f.niri().config.borrow_mut().input.touch.map_to_output = Some(viewer.name());
         f.niri().start_viewing("steam").unwrap();
         f.niri_complete_animations();
-        let region = region_of(&mut f, ProjectionKind::View);
+        let region = region_of(&mut f, view);
         open_screenshot_ui(&mut f);
 
         let tap = region.loc + Point::from((200., 100.));
@@ -3876,5 +3723,853 @@ mod workspace_overview_render_tests {
         // Index 4 is one past the last workspace, where the overview still has geometry.
         assert!(render(&mut f, &output, Draw::Workspace(4)).is_empty());
         assert!(render(&mut f, &output, Draw::Workspace(usize::MAX)).is_empty());
+    }
+}
+
+/// The band a physical monitor reserves at its right edge for virtual outputs while the
+/// overview is open, driven through the real input handlers.
+mod overview_band_tests {
+    use niri_config::{Action, Config};
+    use smithay::desktop::Window;
+    use smithay::output::Output;
+    use smithay::utils::{Logical, Point, Rectangle, Size};
+
+    use super::overview_tests::{map_window_on, output_named};
+    use crate::niri::LockState;
+    use crate::projection::{band_rect, Projection, ProjectionKind, BAND_FRACTION};
+    use crate::tests::client::ClientId;
+    use crate::tests::fixture::Fixture;
+    use crate::tests::input;
+
+    const VIEWER: (u16, u16) = (5120, 1440);
+
+    pub(super) fn set_up_with(config: Config, sources: &[(&str, u16, u16)]) -> Fixture {
+        let mut f = Fixture::with_config(config);
+        f.add_output(1, VIEWER);
+        for (name, w, h) in sources {
+            let state = f.niri_state();
+            state
+                .backend
+                .headless()
+                .create_virtual_output(&mut state.niri, *w, *h, 60, Some(name.to_string()))
+                .unwrap();
+        }
+        f
+    }
+
+    fn set_up(sources: &[(&str, u16, u16)]) -> Fixture {
+        set_up_with(Config::default(), sources)
+    }
+
+    fn refresh(f: &mut Fixture) {
+        f.niri_state().refresh_and_flush_clients();
+    }
+
+    fn toggle_overview(f: &mut Fixture) {
+        f.niri_state().do_action(Action::ToggleOverview, false);
+        refresh(f);
+        f.niri_complete_animations();
+        refresh(f);
+    }
+
+    fn click(f: &mut Fixture) {
+        input::pointer_button(f, input::BTN_LEFT, true);
+        refresh(f);
+        input::pointer_button(f, input::BTN_LEFT, false);
+        refresh(f);
+        f.niri_complete_animations();
+        refresh(f);
+    }
+
+    fn pointer(f: &mut Fixture) -> Point<f64, Logical> {
+        f.niri().seat.get_pointer().unwrap().current_location()
+    }
+
+    fn move_pointer_to(f: &mut Fixture, target: Point<f64, Logical>) {
+        let delta = target - pointer(f);
+        input::pointer_motion(f, delta);
+        refresh(f);
+    }
+
+    fn viewer_size() -> Size<f64, Logical> {
+        Size::from((f64::from(VIEWER.0), f64::from(VIEWER.1)))
+    }
+
+    /// The fully open band, local to the viewer, which sits at the global origin.
+    pub(super) fn full_band() -> Rectangle<f64, Logical> {
+        band_rect(viewer_size(), 1.)
+    }
+
+    fn inset(f: &mut Fixture, output: &Output) -> f64 {
+        f.niri()
+            .layout
+            .monitor_for_output(output)
+            .unwrap()
+            .overview_right_inset()
+    }
+
+    fn reachable(f: &mut Fixture, output: &Output) -> bool {
+        f.niri()
+            .layout
+            .monitor_for_output(output)
+            .unwrap()
+            .overview_offscreen_reachable()
+    }
+
+    pub(super) fn tiles(f: &mut Fixture, source: &str) -> Vec<Projection> {
+        let mut tiles: Vec<_> = f
+            .niri()
+            .projection_state
+            .projections
+            .iter()
+            .filter(|p| p.source == source && matches!(p.kind, ProjectionKind::Tile { .. }))
+            .cloned()
+            .collect();
+        tiles.sort_by(|a, b| a.region.loc.y.total_cmp(&b.region.loc.y));
+        tiles
+    }
+
+    /// Centre x of the viewer's own overview workspaces.
+    fn strip_centre_x(f: &mut Fixture, viewer: &Output) -> f64 {
+        let geo = f
+            .niri()
+            .layout
+            .monitor_for_output(viewer)
+            .unwrap()
+            .workspaces_render_geo()
+            .next()
+            .unwrap();
+        geo.loc.x + geo.size.w / 2.
+    }
+
+    /// (workspaces laid out, workspaces rendered and hit-tested) in `output`'s overview.
+    fn overview_workspaces(f: &mut Fixture, output: &Output) -> (usize, usize) {
+        let mon = f.niri().layout.monitor_for_output(output).unwrap();
+        (
+            mon.workspaces_with_render_geo_cull(false).count(),
+            mon.workspaces_with_render_geo().count(),
+        )
+    }
+
+    /// A window on each of `output`'s first three workspaces, then its first one active, so
+    /// its overview has workspaces below its own screen.
+    pub(super) fn fill_workspaces(f: &mut Fixture, id: ClientId, output: &Output) {
+        for _ in 0..3 {
+            map_window_on(f, id, output, 300, 200);
+            f.niri().layout.switch_workspace_down();
+        }
+        f.niri().layout.switch_workspace(0);
+        f.niri_complete_animations();
+    }
+
+    #[test]
+    fn opening_the_overview_reserves_the_band_and_reaches_every_source_workspace() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        fill_workspaces(&mut f, id, &steam);
+        f.niri().layout.focus_output(&viewer);
+
+        toggle_overview(&mut f);
+
+        let band = full_band();
+        assert!((band.size.w - BAND_FRACTION * 5120.).abs() < 1e-9);
+        assert_eq!(inset(&mut f, &viewer), band.size.w);
+        assert_eq!(inset(&mut f, &steam), 0.);
+        assert!(reachable(&mut f, &steam));
+        assert!(!reachable(&mut f, &viewer));
+
+        let centre = strip_centre_x(&mut f, &viewer);
+        assert!(
+            (centre - band.loc.x / 2.).abs() <= 1.,
+            "the viewer's workspaces are centred at {centre}, not in the width left of the band"
+        );
+        let niri = f.niri();
+        let in_band = Point::from((band.loc.x + 1., 720.));
+        assert!(niri
+            .layout
+            .workspace_under(true, &viewer, in_band)
+            .is_none());
+        let left_of_band = Point::from((band.loc.x - 1., 720.));
+        assert!(niri
+            .layout
+            .workspace_under(true, &viewer, left_of_band)
+            .is_some());
+
+        let (laid_out, reached) = overview_workspaces(&mut f, &steam);
+        assert_eq!(laid_out, 4);
+        assert_eq!(reached, laid_out, "steam's offscreen workspaces are culled");
+    }
+
+    #[test]
+    fn closing_the_overview_releases_the_band() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        toggle_overview(&mut f);
+        assert!(inset(&mut f, &viewer) > 0.);
+
+        toggle_overview(&mut f);
+
+        assert!(!f.niri().layout.is_overview_open());
+        assert_eq!(inset(&mut f, &viewer), 0.);
+        assert!(!reachable(&mut f, &steam));
+        assert!(tiles(&mut f, "steam").is_empty());
+    }
+
+    #[test]
+    fn turning_the_last_virtual_output_off_releases_the_band() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        toggle_overview(&mut f);
+        assert!(!tiles(&mut f, "steam").is_empty());
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .remove_virtual_output(&mut state.niri, "steam")
+            .unwrap();
+        refresh(&mut f);
+
+        assert!(f.niri().layout.is_overview_open());
+        assert_eq!(inset(&mut f, &viewer), 0.);
+        assert!(f.niri().projection_state.projections.is_empty());
+        let centre = strip_centre_x(&mut f, &viewer);
+        assert!((centre - 2560.).abs() <= 1., "{centre}");
+    }
+
+    #[test]
+    fn without_virtual_outputs_the_overview_keeps_the_upstream_geometry() {
+        let mut f = set_up(&[]);
+        let viewer = f.niri_output(1);
+        toggle_overview(&mut f);
+
+        assert_eq!(inset(&mut f, &viewer), 0.);
+        let centre = strip_centre_x(&mut f, &viewer);
+        assert!((centre - 2560.).abs() <= 1., "{centre}");
+        let near_right_edge = Point::from((5110., 720.));
+        assert!(f
+            .niri()
+            .layout
+            .workspace_under(true, &viewer, near_right_edge)
+            .is_some());
+        assert!(f.niri().projection_state.projections.is_empty());
+    }
+
+    #[test]
+    fn the_band_follows_the_overview_progress() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let zoom_setting = f.niri().config.borrow().overview.zoom;
+
+        let check = |f: &mut Fixture, progress: f64| {
+            let zoom = f.niri().layout.overview_zoom();
+            assert!(
+                ((1. - zoom) / (1. - zoom_setting) - progress).abs() < 1e-9,
+                "zoom {zoom} is not at progress {progress}"
+            );
+            let band = band_rect(viewer_size(), progress);
+            let centre = strip_centre_x(f, &viewer);
+            assert!(
+                (centre - band.loc.x / 2.).abs() <= 1.,
+                "at progress {progress} the workspaces are centred at {centre}, band {band:?}"
+            );
+            let tiles = tiles(f, "steam");
+            assert!(!tiles.is_empty(), "no tiles at progress {progress}");
+            for tile in tiles {
+                assert!(
+                    tile.region.loc.x >= band.loc.x && tile.region.intersection(band).is_some(),
+                    "tile {:?} is outside the band {band:?} at progress {progress}",
+                    tile.region
+                );
+            }
+        };
+
+        let start = std::time::Duration::from_millis(1);
+        f.niri().layout.overview_gesture_begin();
+        // The gesture opens the overview fully over 300 px of movement.
+        f.niri().layout.overview_gesture_update(150., start);
+        f.niri().advance_animations();
+        check(&mut f, 0.5);
+
+        f.niri().layout.overview_gesture_update(90., start * 2);
+        f.niri().advance_animations();
+        check(&mut f, 0.8);
+
+        f.niri().layout.overview_gesture_update(-150., start * 3);
+        f.niri().advance_animations();
+        check(&mut f, 0.3);
+    }
+
+    /// A viewer whose first workspace holds six wide columns scrolled to the first one, so the
+    /// later columns reach towards and under the band in the overview, and a `steam` source.
+    fn clash_set_up() -> (Fixture, Output, Vec<Window>) {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let windows = (0..6)
+            .map(|_| map_window_on(&mut f, id, &viewer, 1600, 600))
+            .collect();
+        f.niri_state().do_action(Action::FocusColumnFirst, false);
+        f.niri_state().move_cursor(Point::from((2560., 1300.)));
+        toggle_overview(&mut f);
+        (f, viewer, windows)
+    }
+
+    /// A point on the viewer, in the column `x`, where the viewer's workspace lays out one of
+    /// its windows, whether or not it is hit-testable there.
+    fn laid_out_window_at_x(
+        f: &mut Fixture,
+        viewer: &Output,
+        x: f64,
+    ) -> (Point<f64, Logical>, Window) {
+        let niri = f.niri();
+        let mon = niri.layout.monitor_for_output(viewer).unwrap();
+        let zoom = mon.overview_zoom();
+        let (ws, geo) = mon.workspaces_with_render_geo_cull(false).next().unwrap();
+        (0..144)
+            .map(|j| Point::from((x, (f64::from(j) + 0.5) * 10.)))
+            .find_map(|p| {
+                let within = (p - geo.loc).downscale(zoom);
+                ws.tiles_with_render_positions()
+                    .find(|(tile, pos, _)| Rectangle::new(*pos, tile.tile_size()).contains(within))
+                    .map(|(tile, _, _)| (p, tile.window().window.clone()))
+            })
+            .unwrap_or_else(|| panic!("no viewer window laid out at x = {x}"))
+    }
+
+    #[test]
+    fn a_viewer_window_next_to_the_band_takes_the_click() {
+        let (mut f, viewer, _windows) = clash_set_up();
+        let band = full_band();
+        let (point, window) = laid_out_window_at_x(&mut f, &viewer, band.loc.x - 20.);
+
+        move_pointer_to(&mut f, point);
+        assert_eq!(
+            f.niri().pointer_contents.output.as_ref(),
+            Some(&viewer),
+            "the pointer next to the band resolves off the viewer"
+        );
+        click(&mut f);
+
+        assert!(!f.niri().layout.is_overview_open());
+        assert_eq!(
+            f.niri().layout.focus().map(|m| m.window.clone()),
+            Some(window)
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_band_never_reaches_the_viewer() {
+        let (mut f, viewer, _windows) = clash_set_up();
+        let band = full_band();
+        // The band's margin left of the tiles, over a viewer window laid out beneath it.
+        let (point, _under) = laid_out_window_at_x(&mut f, &viewer, band.loc.x + 2.);
+        let focused = f.niri().layout.focus().map(|m| m.window.clone());
+
+        move_pointer_to(&mut f, point);
+        assert!(f.niri().pointer_contents.window.is_none());
+        click(&mut f);
+
+        assert!(f.niri().layout.is_overview_open());
+        assert_eq!(f.niri().layout.focus().map(|m| m.window.clone()), focused);
+        assert_eq!(f.niri().layout.active_output(), Some(&viewer));
+    }
+
+    #[test]
+    fn clicking_the_band_background_while_viewing_keeps_view_mode_and_the_overview() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let steam = output_named(&mut f, "steam");
+        f.niri().start_viewing("steam").unwrap();
+        refresh(&mut f);
+        toggle_overview(&mut f);
+        let band = full_band();
+
+        move_pointer_to(&mut f, Point::from((band.loc.x + 2., 720.)));
+        click(&mut f);
+
+        assert!(f.niri().layout.is_overview_open());
+        assert!(f.niri().projection_state.viewing.is_some());
+        assert_eq!(f.niri().layout.active_output(), Some(&steam));
+    }
+
+    #[test]
+    fn clicking_a_label_changes_nothing() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        f.niri().layout.focus_output(&viewer);
+        toggle_overview(&mut f);
+        let first = tiles(&mut f, "steam").into_iter().next().unwrap();
+        // The label row sits right above a group's first tile.
+        let label = first.region.loc + Point::from((first.region.size.w / 2., -12.));
+
+        move_pointer_to(&mut f, label);
+        assert!(f.niri().pointer_contents.window.is_none());
+        click(&mut f);
+
+        assert!(f.niri().layout.is_overview_open());
+        assert_eq!(f.niri().projection_state.viewing, None);
+        assert_eq!(f.niri().layout.active_output(), Some(&viewer));
+    }
+
+    #[test]
+    fn locking_the_session_removes_the_band() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        toggle_overview(&mut f);
+        assert!(!tiles(&mut f, "steam").is_empty());
+
+        let id = f.add_client();
+        let _lock = f.client(id).lock_session();
+        f.roundtrip(id);
+        assert!(!matches!(f.niri().lock_state, LockState::Unlocked));
+
+        assert!(f.niri().projection_state.projections.is_empty());
+        assert_eq!(inset(&mut f, &viewer), 0.);
+        assert!(!reachable(&mut f, &steam));
+        let band = full_band();
+        let in_band = band.loc + band.size.downscale(2.).to_point();
+        let contents = f.niri().contents_under(in_band);
+        assert_eq!(contents.output.as_ref(), Some(&viewer));
+        assert!(contents.window.is_none());
+    }
+
+    fn keyboard_config() -> Config {
+        Config::parse_mem(
+            "binds {
+                Mod+O { toggle-overview; }
+                Mod+Up { focus-workspace-up; }
+                Mod+Down { focus-workspace-down; }
+                Mod+Left { focus-column-left; }
+                Mod+Right { focus-column-right; }
+            }",
+        )
+        .unwrap()
+    }
+
+    fn press(f: &mut Fixture, keys: &[&str]) {
+        for name in keys {
+            input::key(f, name, true);
+            refresh(f);
+        }
+        for name in keys.iter().rev() {
+            input::key(f, name, false);
+            refresh(f);
+        }
+        f.niri_complete_animations();
+        refresh(f);
+    }
+
+    /// Navigates the overview with the keyboard; returns the viewer's active workspace, the
+    /// focused window's index and whether the overview is still open.
+    fn navigate(sources: &[(&str, u16, u16)]) -> (usize, Option<usize>, bool) {
+        let mut f = set_up_with(keyboard_config(), sources);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let mut windows = Vec::new();
+        for _ in 0..2 {
+            windows.push(map_window_on(&mut f, id, &viewer, 800, 600));
+        }
+        f.niri().layout.switch_workspace_down();
+        windows.push(map_window_on(&mut f, id, &viewer, 800, 600));
+        f.niri().layout.switch_workspace(0);
+        f.niri().layout.focus_output(&viewer);
+        f.niri_complete_animations();
+
+        press(&mut f, &["LWIN", "AD09"]);
+        assert!(f.niri().layout.is_overview_open());
+        if !sources.is_empty() {
+            assert!(!f.niri().projection_state.projections.is_empty());
+        }
+        press(&mut f, &["LWIN", "LEFT"]);
+        press(&mut f, &["LWIN", "DOWN"]);
+        press(&mut f, &["LWIN", "UP"]);
+        press(&mut f, &["LWIN", "RGHT"]);
+        press(&mut f, &["LWIN", "DOWN"]);
+
+        let niri = f.niri();
+        let ws = niri
+            .layout
+            .monitor_for_output(&viewer)
+            .unwrap()
+            .active_workspace_idx();
+        let focused = niri
+            .layout
+            .focus()
+            .and_then(|m| windows.iter().position(|w| *w == m.window));
+        (ws, focused, niri.layout.is_overview_open())
+    }
+
+    #[test]
+    fn keyboard_navigation_in_the_overview_is_unchanged_by_the_band() {
+        let upstream = navigate(&[]);
+        assert_eq!(
+            upstream.0, 1,
+            "positive control: the keys moved down a workspace"
+        );
+        assert_eq!(navigate(&[("steam", 1280, 800)]), upstream);
+    }
+}
+
+/// What the band draws, and in which order.
+mod overview_band_render_tests {
+    use niri_config::Action;
+    use smithay::backend::renderer::element::{Element as _, Id};
+    use smithay::backend::renderer::gles::GlesRenderer;
+    use smithay::output::Output;
+    use smithay::utils::{Logical, Physical, Rectangle, Scale, Size};
+
+    use super::overview_band_tests::{fill_workspaces, full_band, tiles};
+    use super::overview_tests::{map_window_on, output_named};
+    use crate::niri::OutputRenderElements;
+    use crate::projection::{Projection, ProjectionKind};
+    use crate::render_helpers::solid_color::SolidColorBuffer;
+    use crate::render_helpers::{RenderCtx, RenderTarget};
+    use crate::tests::fixture::Fixture;
+
+    fn set_up(sources: &[(&str, u16, u16)]) -> Fixture {
+        let mut f = Fixture::new();
+        f.niri_state().backend.headless().add_renderer().unwrap();
+        f.add_output(1, (5120, 1440));
+        for (name, w, h) in sources {
+            let state = f.niri_state();
+            state
+                .backend
+                .headless()
+                .create_virtual_output(&mut state.niri, *w, *h, 60, Some(name.to_string()))
+                .unwrap();
+        }
+        f
+    }
+
+    fn open_overview(f: &mut Fixture) {
+        f.niri_state().do_action(Action::ToggleOverview, false);
+        f.niri_state().refresh_and_flush_clients();
+        f.niri_complete_animations();
+        f.niri_state().refresh_and_flush_clients();
+        assert!(f.niri().layout.is_overview_open());
+    }
+
+    fn render(f: &mut Fixture, output: &Output) -> Vec<OutputRenderElements<GlesRenderer>> {
+        f.niri().update_render_elements(None);
+        let state = f.niri_state();
+        let niri = &state.niri;
+        state
+            .backend
+            .headless()
+            .with_primary_renderer(|renderer| {
+                let ctx = RenderCtx {
+                    renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                niri.render_to_vec(ctx, output, false)
+            })
+            .unwrap()
+    }
+
+    fn physical(rect: Rectangle<f64, Logical>) -> Rectangle<i32, Physical> {
+        rect.to_physical_precise_round(1.)
+    }
+
+    const SCALE: f64 = 1.;
+
+    fn band_fill_index(elements: &[OutputRenderElements<GlesRenderer>]) -> usize {
+        let band = physical(full_band());
+        elements
+            .iter()
+            .position(|e| {
+                matches!(e, OutputRenderElements::SolidColor(_))
+                    && e.geometry(Scale::from(SCALE)) == band
+            })
+            .unwrap_or_else(|| panic!("no opaque fill covering the band {band:?}"))
+    }
+
+    fn tile_kind(f: &mut Fixture, output: &Output, ws_idx: usize) -> ProjectionKind {
+        let mon = f.niri().layout.monitor_for_output(output).unwrap();
+        let (ws, _) = mon
+            .workspaces_with_render_geo_cull(false)
+            .nth(ws_idx)
+            .unwrap();
+        ProjectionKind::Tile { workspace: ws.id() }
+    }
+
+    fn highlight_color(f: &mut Fixture) -> [f32; 4] {
+        let color = f.niri().config.borrow().layout.focus_ring.active_color;
+        SolidColorBuffer::new((1., 1.), color).color().components()
+    }
+
+    #[test]
+    fn egl_the_band_is_drawn_above_the_viewers_workspaces() {
+        let mut f = set_up(&[("steam", 1280, 800), ("aux", 1920, 1080)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        for name in ["steam", "aux"] {
+            let output = output_named(&mut f, name);
+            map_window_on(&mut f, id, &output, 300, 200);
+        }
+        map_window_on(&mut f, id, &viewer, 300, 200);
+        open_overview(&mut f);
+        let scale = Scale::from(SCALE);
+        let band = physical(full_band());
+
+        let elements = render(&mut f, &viewer);
+        let fill = band_fill_index(&elements);
+
+        let first_monitor = elements
+            .iter()
+            .position(|e| matches!(e, OutputRenderElements::Monitor(_)))
+            .unwrap();
+        assert!(
+            fill < first_monitor,
+            "the band fill ({fill}) is below the viewer's workspaces ({first_monitor})"
+        );
+        let projected: Vec<_> = elements
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, OutputRenderElements::Projected(_)))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!projected.is_empty());
+        assert!(
+            projected.iter().all(|i| *i < fill),
+            "a tile is under the fill"
+        );
+
+        let labels: Vec<_> = elements
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                matches!(e, OutputRenderElements::Texture(_))
+                    && band.contains_rect(e.geometry(scale))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(labels.len(), 2, "one label per virtual output");
+        assert!(labels.iter().all(|i| *i < fill));
+    }
+
+    #[test]
+    fn egl_a_viewer_window_overflowing_into_the_band_is_hidden_under_it() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        for _ in 0..6 {
+            map_window_on(&mut f, id, &viewer, 1600, 600);
+        }
+        f.niri_state().do_action(Action::FocusColumnFirst, false);
+        open_overview(&mut f);
+        let scale = Scale::from(SCALE);
+        let band = physical(full_band());
+
+        let elements = render(&mut f, &viewer);
+        let overflow = elements
+            .iter()
+            .filter(|e| matches!(e, OutputRenderElements::Monitor(_)))
+            .find_map(|e| e.geometry(scale).intersection(band))
+            .expect("no viewer element reaches into the band");
+        let pixel = Rectangle::new(overflow.loc, Size::from((1, 1)));
+        let top = elements
+            .iter()
+            .find(|e| e.geometry(scale).contains_rect(pixel))
+            .unwrap();
+        assert!(
+            !matches!(top, OutputRenderElements::Monitor(_)),
+            "the viewer's own window is visible in the band at {pixel:?}"
+        );
+    }
+
+    /// Tile regions shown on the viewer, cut to the band.
+    fn visible_tiles(f: &mut Fixture) -> Vec<(Projection, Rectangle<i32, Physical>)> {
+        let band = full_band();
+        f.niri()
+            .projection_state
+            .projections
+            .iter()
+            .filter(|p| matches!(p.kind, ProjectionKind::Tile { .. }))
+            .filter_map(|p| Some((p.clone(), physical(p.region.intersection(band)?))))
+            .collect()
+    }
+
+    #[test]
+    fn egl_tile_elements_are_cropped_to_their_tile() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        // Wide windows overflow steam's workspaces, so uncropped they would leave their tiles.
+        for _ in 0..3 {
+            map_window_on(&mut f, id, &steam, 1200, 600);
+        }
+        open_overview(&mut f);
+        let scale = Scale::from(SCALE);
+        let tiles = visible_tiles(&mut f);
+        assert!(!tiles.is_empty());
+
+        let elements = render(&mut f, &viewer);
+        let projected: Vec<_> = elements
+            .iter()
+            .filter(|e| matches!(e, OutputRenderElements::Projected(_)))
+            .map(|e| e.geometry(scale))
+            .collect();
+        assert!(!projected.is_empty());
+        for geo in projected {
+            assert!(
+                tiles.iter().any(|(_, tile)| tile.contains_rect(geo)),
+                "projected element {geo:?} is outside every tile {tiles:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn egl_tiles_outside_the_visible_band_draw_nothing() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        for _ in 0..5 {
+            map_window_on(&mut f, id, &steam, 300, 200);
+            f.niri().layout.switch_workspace_down();
+        }
+        f.niri().layout.switch_workspace(0);
+        f.niri().layout.focus_output(&viewer);
+        open_overview(&mut f);
+        let scale = Scale::from(SCALE);
+        let band = physical(full_band());
+
+        let workspaces = f
+            .niri()
+            .layout
+            .monitor_for_output(&steam)
+            .unwrap()
+            .workspaces_with_render_geo_cull(false)
+            .count();
+        let shown = tiles(&mut f, "steam");
+        assert!(
+            !shown.is_empty() && shown.len() < workspaces,
+            "{} tiles for {workspaces} workspaces: the column should overflow the band",
+            shown.len()
+        );
+        for tile in &shown {
+            assert!(tile.region.intersection(full_band()).is_some());
+        }
+
+        let elements = render(&mut f, &viewer);
+        for e in elements
+            .iter()
+            .filter(|e| matches!(e, OutputRenderElements::Projected(_)))
+        {
+            let geo = e.geometry(scale);
+            assert!(
+                band.contains_rect(geo),
+                "{geo:?} is outside the band {band:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn egl_only_each_sources_active_tile_is_highlighted() {
+        let mut f = set_up(&[("steam", 1280, 800), ("aux", 1920, 1080)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let aux = output_named(&mut f, "aux");
+        let id = f.add_client();
+        // aux comes first in the column; steam's second tile, its active one, starts on screen.
+        map_window_on(&mut f, id, &steam, 300, 200);
+        f.niri().layout.switch_workspace(1);
+        f.niri().layout.focus_output(&viewer);
+        open_overview(&mut f);
+        let scale = Scale::from(SCALE);
+        let color = highlight_color(&mut f);
+
+        let active = |f: &mut Fixture, output: &Output| {
+            let mon = f.niri().layout.monitor_for_output(output).unwrap();
+            ProjectionKind::Tile {
+                workspace: mon.active_workspace_ref().id(),
+            }
+        };
+        let steam_active = active(&mut f, &steam);
+        let aux_active = active(&mut f, &aux);
+        assert_ne!(
+            steam_active,
+            tile_kind(&mut f, &steam, 0),
+            "positive control: steam's active workspace is not its first"
+        );
+        let tiles: Vec<_> = visible_tiles(&mut f)
+            .into_iter()
+            .map(|(tile, _)| {
+                let region = physical(tile.region);
+                (tile, region)
+            })
+            .collect();
+
+        let elements = render(&mut f, &viewer);
+        let highlights: Vec<_> = elements
+            .iter()
+            .filter_map(|e| match e {
+                OutputRenderElements::SolidColor(solid) if solid.color().components() == color => {
+                    Some(e.geometry(scale))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!highlights.is_empty(), "no highlight drawn");
+
+        let mut highlighted: Vec<ProjectionKind> = Vec::new();
+        for geo in &highlights {
+            let (tile, _) = tiles
+                .iter()
+                .find(|(_, rect)| rect.contains_rect(*geo))
+                .unwrap_or_else(|| panic!("highlight {geo:?} is on no tile"));
+            if !highlighted.contains(&tile.kind) {
+                highlighted.push(tile.kind);
+            }
+        }
+        highlighted.sort_by_key(|kind| *kind == aux_active);
+        assert_eq!(highlighted, vec![steam_active, aux_active]);
+    }
+
+    /// FR-030: the band changes nothing the virtual output itself shows.
+    #[test]
+    fn egl_the_sources_own_frame_is_unchanged_by_the_band() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        fill_workspaces(&mut f, id, &steam);
+        f.niri().layout.focus_output(&viewer);
+        open_overview(&mut f);
+        let scale = Scale::from(SCALE);
+        let on_screen = Rectangle::from_size(Size::from((1280, 800)));
+        let own = |f: &mut Fixture| -> Vec<(Id, Rectangle<i32, Physical>)> {
+            let elements = render(f, &steam);
+            assert!(!elements
+                .iter()
+                .any(|e| matches!(e, OutputRenderElements::Projected(_))));
+            elements
+                .iter()
+                .map(|e| (e.id().clone(), e.geometry(scale)))
+                .filter(|(_, geo)| geo.overlaps(on_screen))
+                .collect()
+        };
+
+        let with_band = own(&mut f);
+        f.niri()
+            .layout
+            .set_overview_offscreen_reachable(&steam, false);
+        let without = own(&mut f);
+
+        assert!(!with_band.is_empty());
+        assert_eq!(
+            with_band.len(),
+            without.len(),
+            "{with_band:?} != {without:?}"
+        );
+        for elem in &with_band {
+            assert!(without.contains(elem), "{elem:?} only drawn with the band");
+        }
     }
 }
