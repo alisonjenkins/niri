@@ -123,7 +123,9 @@ use wayland_server::protocol::wl_output::WlOutput;
 use crate::a11y::A11y;
 use crate::animation::Clock;
 use crate::backend::tty::SurfaceDmabufFeedback;
-use crate::backend::virtual_output::{is_virtual_output, VirtualOutputError};
+use crate::backend::virtual_output::{
+    is_virtual_output, VirtualOutputError, VIRTUAL_OUTPUT_MAKE, VIRTUAL_OUTPUT_MODEL,
+};
 use crate::backend::{Backend, Headless, RenderResult, Tty, Winit};
 use crate::cursor::{CursorManager, CursorTextureCache, RenderCursor, XCursor};
 #[cfg(feature = "dbus")]
@@ -764,6 +766,48 @@ pub struct State {
 }
 
 impl State {
+    /// Handles a view-output request or bind: view `name`, or stop viewing
+    /// when there is no name.
+    ///
+    /// Unlike [`Niri::start_viewing`], this can tell a turned-off virtual
+    /// output from an unknown name, because the backend still lists it.
+    pub fn view_output(
+        &mut self,
+        name: Option<&str>,
+    ) -> Result<ViewOutputState, VirtualOutputError> {
+        let Some(name) = name else {
+            return Ok(self.niri.stop_viewing());
+        };
+
+        let result = match self.niri.start_viewing(name) {
+            Err(VirtualOutputError::NotFound(_)) => Err(self.classify_output_not_in_layout(name)),
+            other => other,
+        };
+        if let Err(error) = &result {
+            warn!(name, %error, "rejected view-output request");
+        }
+        result
+    }
+
+    /// Why `name`, which is not in the layout, cannot be viewed.
+    fn classify_output_not_in_layout(&self, name: &str) -> VirtualOutputError {
+        let ipc_outputs = self.backend.ipc_outputs();
+        let Ok(ipc_outputs) = ipc_outputs.lock() else {
+            warn!(
+                name,
+                "IPC output list is poisoned; reporting the output as unknown"
+            );
+            return VirtualOutputError::NotFound(name.to_owned());
+        };
+        match ipc_outputs.values().find(|o| o.name == name) {
+            Some(o) if o.make == VIRTUAL_OUTPUT_MAKE && o.model == VIRTUAL_OUTPUT_MODEL => {
+                VirtualOutputError::Disabled(name.to_owned())
+            }
+            Some(_) => VirtualOutputError::NotVirtual(name.to_owned()),
+            None => VirtualOutputError::NotFound(name.to_owned()),
+        }
+    }
+
     pub fn new(
         config: Config,
         event_loop: LoopHandle<'static, State>,

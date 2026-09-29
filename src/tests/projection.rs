@@ -1368,6 +1368,50 @@ mod view_tests {
     }
 
     #[test]
+    fn viewing_a_turned_off_virtual_output_says_it_is_off() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        // Turning a virtual output off takes it out of the layout while the
+        // backend keeps listing it.
+        let steam = output_named(&mut f, "steam");
+        f.niri().remove_output(&steam);
+
+        assert_eq!(
+            f.niri_state().view_output(Some("steam")),
+            Err(VirtualOutputError::Disabled("steam".to_string()))
+        );
+        assert_eq!(viewing(&mut f), None);
+    }
+
+    #[test]
+    fn view_output_request_starts_and_stops() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1).name();
+
+        assert_eq!(
+            f.niri_state().view_output(Some("steam")),
+            Ok(ViewOutputState::Viewing {
+                viewer: viewer.clone(),
+                source: "steam".to_string(),
+            })
+        );
+        assert_eq!(
+            f.niri_state().view_output(Some("nope")),
+            Err(VirtualOutputError::NotFound("nope".to_string()))
+        );
+        assert_eq!(
+            f.niri_state().view_output(None),
+            Ok(ViewOutputState::Stopped {
+                viewer,
+                source: "steam".to_string(),
+            })
+        );
+        assert_eq!(
+            f.niri_state().view_output(None),
+            Ok(ViewOutputState::NotViewing)
+        );
+    }
+
+    #[test]
     fn viewing_without_a_physical_output_fails() {
         let mut f = Fixture::new();
         let state = f.niri_state();

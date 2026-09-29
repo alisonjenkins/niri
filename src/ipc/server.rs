@@ -512,8 +512,22 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             result.map_err(|err| err.to_string())?;
             Response::Handled
         }
-        Request::ViewOutput { .. } => {
-            return Err("view-output is not implemented yet".to_string());
+        Request::ViewOutput { name } => {
+            let (tx, rx) = async_channel::bounded(1);
+
+            ctx.event_loop.insert_idle(move |state| {
+                let result = state.view_output(name.as_deref());
+                let _ = tx.send_blocking(result);
+            });
+
+            let result = rx
+                .recv()
+                .await
+                .map_err(|_| String::from("error handling view-output"))?;
+            match result {
+                Ok(view_state) => Response::ViewOutput(view_state),
+                Err(err) => return Err(err.to_string()),
+            }
         }
     };
 
