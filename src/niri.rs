@@ -597,6 +597,15 @@ pub struct PointContents {
     pub hot_corner: bool,
 }
 
+/// Whether a render includes the compositor-wide UI (dialogs, notifications, overlays,
+/// switchers, the screenshot UI, the view-output label) on top of the output's own contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalUi {
+    Include,
+    /// For an output rendered into another one's frame, which draws the UI itself.
+    Skip,
+}
+
 /// An output under a global position, from [`Niri::resolve_output_under`].
 struct OutputUnder<'a> {
     output: &'a Output,
@@ -5067,9 +5076,20 @@ impl Niri {
 
     pub fn render<R: NiriRenderer>(
         &self,
+        ctx: RenderCtx<R>,
+        output: &Output,
+        include_pointer: bool,
+        push: &mut dyn FnMut(OutputRenderElements<R>),
+    ) {
+        self.render_with(ctx, output, include_pointer, GlobalUi::Include, push);
+    }
+
+    fn render_with<R: NiriRenderer>(
+        &self,
         mut ctx: RenderCtx<R>,
         output: &Output,
         include_pointer: bool,
+        global_ui: GlobalUi,
         push: &mut dyn FnMut(OutputRenderElements<R>),
     ) {
         let _span = tracy_client::span!("Niri::render");
@@ -5090,7 +5110,7 @@ impl Niri {
         let state = self.output_state.get(output).unwrap();
         ctx.xray = Some(&state.xray);
 
-        self.render_inner(ctx, output, include_pointer, push);
+        self.render_inner(ctx, output, include_pointer, global_ui, push);
 
         self.clear_xray_elements(output);
     }
@@ -5100,8 +5120,10 @@ impl Niri {
         mut ctx: RenderCtx<R>,
         output: &Output,
         include_pointer: bool,
+        global_ui: GlobalUi,
         push: &mut dyn FnMut(OutputRenderElements<R>),
     ) {
+        let with_global_ui = global_ui == GlobalUi::Include;
         let state = self.output_state.get(output).unwrap();
         let output_scale = Scale::from(output.current_scale().fractional_scale());
 
@@ -5132,11 +5154,16 @@ impl Niri {
         }
 
         // Next, the exit confirm dialog.
-        self.exit_confirm_dialog
-            .render(ctx.renderer, output, &mut |elem| push(elem.into()));
+        if with_global_ui {
+            self.exit_confirm_dialog
+                .render(ctx.renderer, output, &mut |elem| push(elem.into()));
+        }
 
         // Next, the config error notification too.
-        if let Some(element) = self.config_error_notification.render(ctx.renderer, output) {
+        if let Some(element) = with_global_ui
+            .then(|| self.config_error_notification.render(ctx.renderer, output))
+            .flatten()
+        {
             push(element.into());
         }
 
@@ -5178,7 +5205,7 @@ impl Niri {
         .into();
 
         // If the screenshot UI is open, draw it.
-        if self.screenshot_ui.is_open() {
+        if with_global_ui && self.screenshot_ui.is_open() {
             self.screenshot_ui
                 .render_output(output, ctx.target, &mut |elem| push(elem.into()));
 
@@ -5188,19 +5215,21 @@ impl Niri {
             return;
         }
 
-        // After the lock screen, which must not show which output is viewed.
-        if let Some(element) = self.view_output_label.render(ctx.renderer, output) {
-            push(element.into());
-        }
+        if with_global_ui {
+            // After the lock screen, which must not show which output is viewed.
+            if let Some(element) = self.view_output_label.render(ctx.renderer, output) {
+                push(element.into());
+            }
 
-        // Draw the hotkey overlay on top.
-        if let Some(element) = self.hotkey_overlay.render(ctx.renderer, output) {
-            push(element.into());
-        }
+            // Draw the hotkey overlay on top.
+            if let Some(element) = self.hotkey_overlay.render(ctx.renderer, output) {
+                push(element.into());
+            }
 
-        // Then, the Alt-Tab switcher.
-        self.window_mru_ui
-            .render_output(self, output, ctx.r(), &mut |elem| push(elem.into()));
+            // Then, the Alt-Tab switcher.
+            self.window_mru_ui
+                .render_output(self, output, ctx.r(), &mut |elem| push(elem.into()));
+        }
 
         // Don't draw the focus ring on the workspaces while interactively moving above those
         // workspaces, since the interactively-moved window already has a focus ring.
@@ -5448,7 +5477,9 @@ impl Niri {
         let source_scale = source.current_scale().fractional_scale();
         let crop = projection.region.to_physical_precise_round(viewer_scale);
 
-        self.render(ctx.r(), source, false, &mut |elem| {
+        // The viewer draws the global UI itself; drawing it again from the source would put
+        // the same per-scale texture ids into the viewer's frame twice.
+        self.render_with(ctx.r(), source, false, GlobalUi::Skip, &mut |elem| {
             let elem = ProjectedElement::new(
                 elem,
                 source_scale,
