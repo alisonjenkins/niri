@@ -2616,12 +2616,11 @@ impl State {
                             wmru.set_filter(filter);
                         }
 
-                        if let Some(output) = self.niri.layout.active_output() {
-                            self.niri.window_mru_ui.open(
-                                self.niri.clock.clone(),
-                                wmru,
-                                output.clone(),
-                            );
+                        if let Some(active) = self.niri.layout.active_output() {
+                            let output = self.niri.mru_output_for(active);
+                            self.niri
+                                .window_mru_ui
+                                .open(self.niri.clock.clone(), wmru, output);
 
                             // Only select the *next* window if some window (which should be the
                             // first one) is already focused. If nothing is focused, keep the first
@@ -2824,12 +2823,8 @@ impl State {
             self.niri.screenshot_ui.pointer_motion(point, None);
         }
 
-        if let Some(mru_output) = self.niri.window_mru_ui.output() {
-            if let Some((output, pos_within_output)) = self.niri.output_under(new_pos) {
-                if mru_output == output {
-                    self.niri.window_mru_ui.pointer_motion(pos_within_output);
-                }
-            }
+        if let Some(pos_within_output) = self.niri.mru_pos_under(new_pos) {
+            self.niri.window_mru_ui.pointer_motion(pos_within_output);
         }
 
         let under = self.niri.contents_under(new_pos);
@@ -2963,12 +2958,8 @@ impl State {
             self.niri.screenshot_ui.pointer_motion(point, None);
         }
 
-        if let Some(mru_output) = self.niri.window_mru_ui.output() {
-            if let Some((output, pos_within_output)) = self.niri.output_under(pos) {
-                if mru_output == output {
-                    self.niri.window_mru_ui.pointer_motion(pos_within_output);
-                }
-            }
+        if let Some(pos_within_output) = self.niri.mru_pos_under(pos) {
+            self.niri.window_mru_ui.pointer_motion(pos_within_output);
         }
 
         let under = self.niri.contents_under(pos);
@@ -3083,12 +3074,11 @@ impl State {
             self.niri.cancel_interrupted_release_binds();
 
             let mut is_mru_open = false;
-            if let Some(mru_output) = self.niri.window_mru_ui.output() {
+            if self.niri.window_mru_ui.is_open() {
                 is_mru_open = true;
                 if let Some(MouseButton::Left) = button {
                     let location = pointer.current_location();
-                    let (output, pos_within_output) = self.niri.output_under(location).unwrap();
-                    if mru_output == output {
+                    if let Some(pos_within_output) = self.niri.mru_pos_under(location) {
                         let id = self.niri.window_mru_ui.pointer_motion(pos_within_output);
                         if id.is_some() {
                             self.confirm_mru();
@@ -3862,12 +3852,8 @@ impl State {
             self.niri.screenshot_ui.pointer_motion(point, None);
         }
 
-        if let Some(mru_output) = self.niri.window_mru_ui.output() {
-            if let Some((output, pos_within_output)) = self.niri.output_under(pos) {
-                if mru_output == output {
-                    self.niri.window_mru_ui.pointer_motion(pos_within_output);
-                }
-            }
+        if let Some(pos_within_output) = self.niri.mru_pos_under(pos) {
+            self.niri.window_mru_ui.pointer_motion(pos_within_output);
         }
 
         let under = self.niri.contents_under(pos);
@@ -3967,18 +3953,15 @@ impl State {
                                 self.niri.queue_redraw_all();
                             }
                         }
-                    } else if let Some(mru_output) = self.niri.window_mru_ui.output() {
-                        if let Some((output, pos_within_output)) = self.niri.output_under(pos) {
-                            if mru_output == output {
-                                let id = self.niri.window_mru_ui.pointer_motion(pos_within_output);
-                                if id.is_some() {
-                                    self.confirm_mru();
-                                } else {
-                                    self.niri.cancel_mru();
-                                }
-                            } else {
-                                self.niri.cancel_mru();
-                            }
+                    } else if self.niri.window_mru_ui.is_open() {
+                        let id = self
+                            .niri
+                            .mru_pos_under(pos)
+                            .and_then(|pos| self.niri.window_mru_ui.pointer_motion(pos));
+                        if id.is_some() {
+                            self.confirm_mru();
+                        } else {
+                            self.niri.cancel_mru();
                         }
                     } else if !tool.is_grabbed() {
                         if under.overview && !mod_down && under.output.is_some() {
@@ -4606,18 +4589,15 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
-        } else if let Some(mru_output) = self.niri.window_mru_ui.output() {
-            if let Some((output, pos_within_output)) = self.niri.output_under(pos) {
-                if mru_output == output {
-                    let id = self.niri.window_mru_ui.pointer_motion(pos_within_output);
-                    if id.is_some() {
-                        self.confirm_mru();
-                    } else {
-                        self.niri.cancel_mru();
-                    }
-                } else {
-                    self.niri.cancel_mru();
-                }
+        } else if self.niri.window_mru_ui.is_open() {
+            let id = self
+                .niri
+                .mru_pos_under(pos)
+                .and_then(|pos| self.niri.window_mru_ui.pointer_motion(pos));
+            if id.is_some() {
+                self.confirm_mru();
+            } else {
+                self.niri.cancel_mru();
             }
         } else if !handle.is_grabbed() {
             if under.overview && !mod_down && under.output.is_some() {

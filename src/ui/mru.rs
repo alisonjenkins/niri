@@ -1072,6 +1072,18 @@ impl WindowMruUi {
         inner.wmru.current_id
     }
 
+    /// Each thumbnail in view and its rectangle on the MRU's output, as pointer input sees it.
+    #[cfg(test)]
+    pub fn thumbnails_in_view(&self) -> Vec<(MappedId, Rectangle<f64, Logical>)> {
+        let UiState::Open(inner) = &self.state else {
+            return Vec::new();
+        };
+        inner
+            .thumbnails_in_view_static()
+            .map(|(thumbnail, geo)| (thumbnail.id, geo))
+            .collect()
+    }
+
     pub fn update_window(&mut self, layout: &Layout<Mapped>, id: MappedId) {
         let UiState::Open(inner) = &mut self.state else {
             return;

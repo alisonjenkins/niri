@@ -1880,7 +1880,10 @@ mod view_render_tests {
         (f, viewer)
     }
 
-    fn render(f: &mut Fixture, output: &Output) -> Vec<OutputRenderElements<GlesRenderer>> {
+    pub(super) fn render(
+        f: &mut Fixture,
+        output: &Output,
+    ) -> Vec<OutputRenderElements<GlesRenderer>> {
         f.niri().update_render_elements(None);
         let state = f.niri_state();
         let niri = &state.niri;
@@ -1965,6 +1968,128 @@ mod view_render_tests {
         let elements = render(&mut f, &viewer);
 
         super::render_tests::assert_unique_ids(&elements);
+    }
+}
+
+/// The Alt-Tab switcher while a virtual output is viewed: it must be drawn on, and take
+/// pointer input from, the physical viewer rather than the source nobody sees.
+mod mru_tests {
+    use niri_config::{Action, Config, MruDirection};
+    use smithay::desktop::Window;
+    use smithay::output::Output;
+    use smithay::utils::{Logical, Point, Rectangle};
+
+    use super::overview_tests::{map_window_on, output_named};
+    use super::view_render_tests::render;
+    use crate::niri::OutputRenderElements;
+    use crate::tests::fixture::Fixture;
+    use crate::tests::input;
+    use crate::ui::mru::WindowMruUiRenderElement;
+
+    /// A 1920x1080 viewer with a window of its own, viewing a 1280x800 `steam` with two
+    /// windows, and the Alt-Tab switcher opened by its bind's action.
+    fn set_up() -> (Fixture, Output, Vec<Window>) {
+        let mut config = Config::default();
+        // Show the switcher at once instead of after the default delay.
+        config.recent_windows.open_delay_ms = 0;
+        let mut f = Fixture::with_config(config);
+        f.niri_state().backend.headless().add_renderer().unwrap();
+        f.add_output(1, (1920, 1080));
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+
+        let id = f.add_client();
+        let mut windows = vec![map_window_on(&mut f, id, &viewer, 300, 200)];
+        for _ in 0..2 {
+            windows.push(map_window_on(&mut f, id, &steam, 300, 200));
+        }
+        f.niri().layout.focus_output(&viewer);
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        assert_eq!(f.niri().layout.active_output(), Some(&steam));
+
+        f.niri_state().do_action(
+            Action::MruAdvance {
+                direction: MruDirection::Forward,
+                scope: None,
+                filter: None,
+            },
+            false,
+        );
+        f.niri_complete_animations();
+        assert!(f.niri().window_mru_ui.is_open());
+        (f, viewer, windows)
+    }
+
+    fn center(rect: Rectangle<f64, Logical>) -> Point<f64, Logical> {
+        rect.loc + rect.size.downscale(2.).to_point()
+    }
+
+    #[test]
+    fn egl_alt_tab_in_view_mode_draws_the_thumbnails_on_the_viewer() {
+        let (mut f, viewer, _) = set_up();
+
+        let elements = render(&mut f, &viewer);
+
+        let thumbnails = elements
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    OutputRenderElements::WindowMruUi(WindowMruUiRenderElement::Thumbnail(_))
+                )
+            })
+            .count();
+        assert_eq!(
+            thumbnails,
+            3,
+            "the viewer's frame should show a thumbnail per window, MRU is on {:?}",
+            f.niri().window_mru_ui.output().map(|o| o.name())
+        );
+    }
+
+    #[test]
+    fn egl_clicking_a_thumbnail_in_view_mode_activates_its_window() {
+        let (mut f, viewer, windows) = set_up();
+        assert_eq!(
+            f.niri().window_mru_ui.output(),
+            Some(&viewer),
+            "the switcher opened on the source nobody sees"
+        );
+        let current = f.niri().window_mru_ui.current_window_id();
+        let (target_id, rect) = f
+            .niri()
+            .window_mru_ui
+            .thumbnails_in_view()
+            .into_iter()
+            .find(|(id, _)| Some(*id) != current)
+            .unwrap();
+        let target = windows
+            .iter()
+            .find(|w| f.niri().find_window_by_id(target_id).as_ref() == Some(*w))
+            .unwrap()
+            .clone();
+        let viewer_loc = f
+            .niri()
+            .global_space
+            .output_geometry(&viewer)
+            .unwrap()
+            .loc
+            .to_f64();
+
+        f.niri_state().move_cursor(center(rect) + viewer_loc);
+        input::pointer_button(&mut f, input::BTN_LEFT, true);
+        input::pointer_button(&mut f, input::BTN_LEFT, false);
+
+        assert!(!f.niri().window_mru_ui.is_open());
+        let focused = f.niri().layout.focus().map(|m| m.window.clone());
+        assert_eq!(focused.as_ref(), Some(&target));
     }
 }
 
