@@ -13,6 +13,7 @@ use smithay::output::Output;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use super::fixture::Fixture;
+use super::test_input_backend::{TestInputBackend, TestKeyboardKeyEvent};
 use crate::input::backend_ext::NiriInputDevice;
 use crate::niri::State;
 
@@ -213,6 +214,34 @@ pub fn super_key(f: &mut Fixture, pressed: bool) {
         time,
         |_, _, _| FilterResult::Forward,
     );
+}
+
+/// Presses or releases the key with xkb name `name` (such as `ESC` or `LWIN`) through niri's
+/// keyboard handler, so binds and compositor UI see it as they would a real key.
+pub fn key(f: &mut Fixture, name: &str, pressed: bool) {
+    let state = f.niri_state();
+    let keyboard = state.niri.seat.get_keyboard().unwrap();
+    let code = keyboard
+        .with_xkb_state(state, |xkb| {
+            let xkb = xkb.xkb().lock().unwrap();
+            // SAFETY: the keymap is only read while the xkb lock is held.
+            let keymap = unsafe { xkb.keymap() };
+            keymap.key_by_name(name)
+        })
+        .unwrap_or_else(|| panic!("unknown key {name}"));
+    let state = if pressed {
+        KeyState::Pressed
+    } else {
+        KeyState::Released
+    };
+    let event = TestKeyboardKeyEvent {
+        time: InputTime::from_micros(next_time_usec()),
+        code,
+        state,
+        count: 1,
+    };
+    f.niri_state()
+        .process_input_event(InputEvent::<TestInputBackend>::Keyboard { event });
 }
 
 pub fn pointer_button(f: &mut Fixture, button: u32, pressed: bool) {

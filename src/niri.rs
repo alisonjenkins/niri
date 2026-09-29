@@ -785,7 +785,7 @@ impl State {
         name: Option<&str>,
     ) -> Result<ViewOutputState, VirtualOutputError> {
         let Some(name) = name else {
-            return Ok(self.niri.stop_viewing());
+            return Ok(self.niri.stop_viewing("view-output without a name"));
         };
 
         let result = match self.niri.start_viewing(name) {
@@ -920,6 +920,7 @@ impl State {
         // These should be called periodically, before flushing the clients.
         self.niri.popups.cleanup();
         self.refresh_popup_grab();
+        self.niri.stop_viewing_if_viewer_active();
         self.update_keyboard_focus();
 
         // Should be called before refresh_layout() because that one will refresh other window
@@ -3461,13 +3462,13 @@ impl Niri {
     }
 
     /// Ends view mode, returning the viewer to its own workspaces and making
-    /// it the active monitor.
-    pub fn stop_viewing(&mut self) -> ViewOutputState {
+    /// it the active monitor. `reason` says what ended it, for the log.
+    pub fn stop_viewing(&mut self, reason: &'static str) -> ViewOutputState {
         let Some(Viewing { viewer, source }) = self.projection_state.viewing.take() else {
             return ViewOutputState::NotViewing;
         };
 
-        info!(%viewer, %source, "stopped viewing output");
+        info!(%viewer, %source, reason, "stopped viewing output");
         self.rebuild_projections();
         let output = self.layout.outputs().find(|o| o.name() == viewer).cloned();
         if let Some(output) = output {
@@ -3476,6 +3477,19 @@ impl Niri {
         }
 
         ViewOutputState::Stopped { viewer, source }
+    }
+
+    /// Ends view mode once its viewer has become the active monitor by any other route, such
+    /// as a focus-monitor bind or picking the viewer in the overview with the keyboard: the
+    /// source covers the viewer, so the viewer's own workspaces would be active but hidden.
+    pub fn stop_viewing_if_viewer_active(&mut self) {
+        let viewer_active = match (&self.projection_state.viewing, self.layout.active_output()) {
+            (Some(viewing), Some(active)) => active.name() == viewing.viewer,
+            _ => false,
+        };
+        if viewer_active {
+            self.stop_viewing("viewer became the active monitor");
+        }
     }
 
     /// Activates a workspace clicked or tapped in the overview, closing it.
@@ -3505,7 +3519,7 @@ impl Niri {
             .as_ref()
             .is_some_and(|v| v.viewer == output_name);
         if is_current_viewer {
-            self.stop_viewing();
+            self.stop_viewing("viewer's workspace picked in the overview");
         }
 
         self.layout.focus_output(output);

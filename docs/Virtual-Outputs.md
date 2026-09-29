@@ -227,7 +227,9 @@ While viewing, the virtual output's content fills the physical monitor as far as
 
 Pointer input on the monitor reaches the virtual output at the matching position: clicks, scrolling and focus changes go through to whatever is under that point. A click in the bars reaches nothing. Entering view mode makes the virtual output the active monitor, so window-management commands act on it instead of the physical one.
 
-Opening the overview while viewing shows the normal overview, with the physical monitor's own workspaces and every virtual output's column, including the one being viewed. Closing the overview returns to view mode.
+Opening the overview while viewing shows the normal overview, with the physical monitor's own workspaces and every virtual output's column, including the one being viewed. Closing the overview returns to view mode, unless the physical monitor became the active monitor meanwhile.
+
+Making the physical monitor showing the view the active monitor again ends view mode and shows its own workspaces: clicking one of its workspaces in the overview, moving to it with the keyboard there, or a `focus-monitor-*` bind. Focusing some other monitor leaves view mode alone.
 
 View mode ends on its own, with a one-line notice on the monitor, if the virtual output being viewed turns off or is removed, or if the physical monitor showing it goes away. Running `niri msg view-output` with no name also ends it and returns the monitor to its own workspaces.
 
