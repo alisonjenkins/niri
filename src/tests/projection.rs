@@ -1763,6 +1763,49 @@ mod render_tests {
             .any(|e| matches!(e, OutputRenderElements::Projected(_))));
     }
 
+    fn projected_geometries(
+        f: &mut Fixture,
+        viewer: &Output,
+        update_only_the_viewer: bool,
+    ) -> Vec<Rectangle<i32, Physical>> {
+        let update = update_only_the_viewer.then(|| viewer.clone());
+        f.niri().update_render_elements(update.as_ref());
+        let scale = Scale::from(viewer.current_scale().fractional_scale());
+        let state = f.niri_state();
+        let niri = &state.niri;
+        let elements = state
+            .backend
+            .headless()
+            .with_primary_renderer(|renderer| {
+                let ctx = RenderCtx {
+                    renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                niri.render_to_vec(ctx, viewer, false)
+            })
+            .unwrap();
+        elements
+            .iter()
+            .filter(|e| matches!(e, OutputRenderElements::Projected(_)))
+            .map(|e| e.geometry(scale))
+            .collect()
+    }
+
+    /// A redraw updates only the output being drawn (`redraw` calls
+    /// `update_render_elements(Some(output))`), so the viewer's redraw must bring the sources
+    /// it projects up to date too, or their columns show stale contents.
+    #[test]
+    fn a_viewer_redraw_refreshes_the_sources_it_projects() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+
+        let viewer_only = projected_geometries(&mut f, &viewer, true);
+        let everything = projected_geometries(&mut f, &viewer, false);
+
+        assert_eq!(viewer_only, everything);
+    }
+
     /// The damage tracker keys elements by id, so one frame must not carry an id twice.
     pub(super) fn assert_unique_ids(elements: &[OutputRenderElements<GlesRenderer>]) {
         let mut seen = Vec::new();
