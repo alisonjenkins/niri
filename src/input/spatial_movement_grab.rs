@@ -17,7 +17,11 @@ use crate::niri::State;
 pub struct SpatialMovementGrab {
     start_data: PointerGrabStartData<State>,
     last_location: Point<f64, Logical>,
+    /// The output the gesture drives, which is a projection's source when the grab started
+    /// in a projected column.
     output: Output,
+    /// The physical output the grab started on; the cursor wraps and clamps within it.
+    pointer_output: Output,
     workspace_id: WorkspaceId,
     gesture: GestureState,
 
@@ -38,6 +42,7 @@ impl SpatialMovementGrab {
     pub fn new(
         start_data: PointerGrabStartData<State>,
         output: Output,
+        pointer_output: Output,
         workspace_id: WorkspaceId,
         is_view_offset: bool,
     ) -> Self {
@@ -52,6 +57,7 @@ impl SpatialMovementGrab {
             last_location: location,
             start_data,
             output,
+            pointer_output,
             workspace_id,
             gesture,
             new_location: location,
@@ -60,12 +66,12 @@ impl SpatialMovementGrab {
         }
     }
 
-    pub fn view_offset_output(&self) -> Option<&Output> {
-        (self.gesture == GestureState::ViewOffset).then_some(&self.output)
+    pub fn view_offset_pointer_output(&self) -> Option<&Output> {
+        (self.gesture == GestureState::ViewOffset).then_some(&self.pointer_output)
     }
 
-    pub fn workspace_switch_output(&self) -> Option<&Output> {
-        (self.gesture == GestureState::WorkspaceSwitch).then_some(&self.output)
+    pub fn workspace_switch_pointer_output(&self) -> Option<&Output> {
+        (self.gesture == GestureState::WorkspaceSwitch).then_some(&self.pointer_output)
     }
 
     fn on_frame(&mut self, data: &mut State) -> bool {
