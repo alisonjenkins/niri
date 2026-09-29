@@ -458,6 +458,35 @@ mod fixture_tests {
     }
 
     #[test]
+    fn hot_corner_follows_the_viewer_not_the_projected_source() {
+        let mut f = Fixture::new();
+        f.add_output(1, (1920, 1080));
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+
+        let viewer = f.niri_output(1);
+        f.niri().projection_state.viewing = Some(Viewing {
+            viewer: viewer.name(),
+            source: "steam".to_string(),
+        });
+        f.niri().rebuild_projections();
+
+        // The viewer's own top-left corner lies in the letterbox bar.
+        let viewer_corner = f.niri().contents_under(Point::from((0.5, 0.5)));
+        assert!(viewer_corner.hot_corner);
+
+        // The region starts at x=96, so this maps onto the source's top-left
+        // corner, which is nowhere near a corner of the viewer.
+        let source_corner = f.niri().contents_under(Point::from((96.2, 0.2)));
+        assert!(!source_corner.hot_corner);
+    }
+
+    #[test]
     fn locking_the_session_stops_the_pointer_reaching_the_source() {
         let mut f = Fixture::new();
         f.add_output(1, (1920, 1080));
