@@ -233,20 +233,14 @@ impl MoveGrab {
         match self.gesture {
             GestureState::Recognizing => return true,
             GestureState::Move => {
-                let Some((output, pos_within_output)) = data.niri.output_under(self.last_location)
+                // Interactive move always uses absolute delta since the window must remain pinned
+                // to the cursor even when it's clamped to monitor bounds.
+                let Some(ongoing) =
+                    data.niri
+                        .interactive_move_update_at(&self.window, delta, self.last_location)
                 else {
                     return true;
                 };
-                let output = output.clone();
-
-                // Interactive move always uses absolute delta since the window must remain pinned
-                // to the cursor even when it's clamped to monitor bounds.
-                let ongoing = data.niri.layout.interactive_move_update(
-                    &self.window,
-                    delta,
-                    output,
-                    pos_within_output,
-                );
                 if ongoing {
                     // FIXME: only redraw the previous and the new output.
                     data.niri.queue_redraw_all();
@@ -278,23 +272,21 @@ impl MoveGrab {
 
         // Start move if still recognizing.
         if self.gesture == GestureState::Recognizing {
-            let Some((output, pos_within_output)) = data.niri.output_under(self.last_location)
-            else {
+            if data.niri.output_under(self.last_location).is_none() {
                 return false;
-            };
-            let output = output.clone();
+            }
 
             if !self.begin_move(data) {
                 return false;
             }
 
             // Apply the delta accumulated during recognizing.
-            let ongoing = data.niri.layout.interactive_move_update(
-                &self.window,
-                (self.last_location - self.start_data.location()).downscale(self.input_scale),
-                output,
-                pos_within_output,
-            );
+            let delta =
+                (self.last_location - self.start_data.location()).downscale(self.input_scale);
+            let ongoing = data
+                .niri
+                .interactive_move_update_at(&self.window, delta, self.last_location)
+                .unwrap_or(false);
             if !ongoing {
                 return false;
             }

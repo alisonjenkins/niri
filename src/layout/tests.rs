@@ -727,6 +727,20 @@ enum Op {
         #[proptest(strategy = "-20000f64..20000f64")]
         py: f64,
     },
+    InteractiveMoveUpdateWithoutTarget {
+        #[proptest(strategy = "1..=5usize")]
+        window: usize,
+        #[proptest(strategy = "-20000f64..20000f64")]
+        dx: f64,
+        #[proptest(strategy = "-20000f64..20000f64")]
+        dy: f64,
+        #[proptest(strategy = "1..=5usize")]
+        output_idx: usize,
+        #[proptest(strategy = "-20000f64..20000f64")]
+        px: f64,
+        #[proptest(strategy = "-20000f64..20000f64")]
+        py: f64,
+    },
     InteractiveMoveEnd {
         #[proptest(strategy = "1..=5usize")]
         window: usize,
@@ -1605,6 +1619,25 @@ impl Op {
                     return;
                 };
                 layout.interactive_move_update(
+                    &window,
+                    Point::from((dx, dy)),
+                    output,
+                    Point::from((px, py)),
+                );
+            }
+            Op::InteractiveMoveUpdateWithoutTarget {
+                window,
+                dx,
+                dy,
+                output_idx,
+                px,
+                py,
+            } => {
+                let name = format!("output{output_idx}");
+                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
+                    return;
+                };
+                layout.interactive_move_update_without_target(
                     &window,
                     Point::from((dx, dy)),
                     output,

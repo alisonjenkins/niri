@@ -452,6 +452,17 @@ struct InteractiveMoveData<W: LayoutElement> {
     /// config overrides for the workspace where the move originated from. As soon as the window
     /// moves over some different workspace though, this override will reset.
     pub(self) workspace_config: Option<(WorkspaceId, niri_config::LayoutPart)>,
+    /// Whether the pointer is over a place a drop can go. Without a target, a drop puts the
+    /// window back at `origin`.
+    pub(self) has_target: bool,
+    /// Where the window was before the move took it out of its workspace.
+    pub(self) origin: Option<MoveOrigin>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MoveOrigin {
+    workspace: WorkspaceId,
+    position: InsertPosition,
 }
 
 #[derive(Debug)]
@@ -2904,7 +2915,7 @@ impl<W: LayoutElement> Layout<W> {
         let Some(InteractiveMoveState::Moving(move_)) = self.interactive_move.take() else {
             unreachable!()
         };
-        if output.is_some_and(|out| &move_.output != out) {
+        if output.is_some_and(|out| &move_.output != out) || !move_.has_target {
             self.interactive_move = Some(InteractiveMoveState::Moving(move_));
             return;
         }
@@ -4015,6 +4026,7 @@ impl<W: LayoutElement> Layout<W> {
                     .unwrap();
                 ws.set_fullscreen(window, false);
                 ws.set_maximized(window, false);
+                let origin = move_origin(ws, &window_id);
 
                 let RemovedTile {
                     mut tile,
@@ -4065,6 +4077,8 @@ impl<W: LayoutElement> Layout<W> {
                     pointer_ratio_within_window,
                     output_config,
                     workspace_config,
+                    has_target: true,
+                    origin,
                 };
 
                 if let Some((tile_pos, zoom)) = tile_pos {
@@ -4126,11 +4140,31 @@ impl<W: LayoutElement> Layout<W> {
                 }
 
                 move_.pointer_pos_within_output = pointer_pos_within_output;
+                move_.has_target = true;
 
                 self.interactive_move = Some(InteractiveMoveState::Moving(move_));
             }
         }
 
+        true
+    }
+
+    /// [`Self::interactive_move_update`] with the pointer over a place a drop cannot go: the
+    /// window follows the pointer, but shows no insert hint, and a drop there puts it back
+    /// where it came from.
+    pub fn interactive_move_update_without_target(
+        &mut self,
+        window: &W::Id,
+        delta: Point<f64, Logical>,
+        output: Output,
+        pointer_pos_within_output: Point<f64, Logical>,
+    ) -> bool {
+        if !self.interactive_move_update(window, delta, output, pointer_pos_within_output) {
+            return false;
+        }
+        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
+            move_.has_target = false;
+        }
         true
     }
 
@@ -4215,54 +4249,86 @@ impl<W: LayoutElement> Layout<W> {
                 active_monitor_idx,
                 ..
             } => {
-                let (mon, insert_ws, position, offset, zoom) =
-                    if let Some(mon) = monitors.iter_mut().find(|mon| mon.output == move_.output) {
-                        let zoom = mon.overview_zoom();
+                // Dropped with no target: back where it came from, if that workspace still
+                // exists.
+                let origin = if move_.has_target {
+                    None
+                } else {
+                    move_.origin.and_then(|origin| {
+                        let mon_idx = monitors
+                            .iter()
+                            .position(|mon| mon.idx_of_ws(origin.workspace).is_some())?;
+                        Some((mon_idx, origin))
+                    })
+                };
+                let returning = origin.is_some();
 
-                        let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
-                        let (position, offset) = match insert_ws {
-                            InsertWorkspace::Existing(ws_id) => {
-                                let ws_idx = mon.idx_of_ws(ws_id).unwrap();
+                let (mon, insert_ws, position, offset, zoom) = if let Some((mon_idx, origin)) =
+                    origin
+                {
+                    let mon = &mut monitors[mon_idx];
+                    let zoom = mon.overview_zoom();
+                    let position = mon
+                        .idx_of_ws(origin.workspace)
+                        .map(|ws_idx| {
+                            clamp_insert_position(&mon.workspaces[ws_idx], origin.position)
+                        })
+                        .unwrap_or(origin.position);
+                    (
+                        mon,
+                        InsertWorkspace::Existing(origin.workspace),
+                        position,
+                        None,
+                        zoom,
+                    )
+                } else if let Some(mon) = monitors.iter_mut().find(|mon| mon.output == move_.output)
+                {
+                    let zoom = mon.overview_zoom();
 
-                                let position = if move_.is_floating {
-                                    InsertPosition::Floating
-                                } else {
-                                    let pos_within_workspace =
-                                        (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
-                                    let ws = &mut mon.workspaces[ws_idx];
-                                    ws.scrolling_insert_position(pos_within_workspace)
-                                };
+                    let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
+                    let (position, offset) = match insert_ws {
+                        InsertWorkspace::Existing(ws_id) => {
+                            let ws_idx = mon.idx_of_ws(ws_id).unwrap();
 
-                                (position, Some(geo.loc))
-                            }
-                            InsertWorkspace::NewAt(_) => {
-                                let position = if move_.is_floating {
-                                    InsertPosition::Floating
-                                } else {
-                                    InsertPosition::NewColumn(0)
-                                };
+                            let position = if move_.is_floating {
+                                InsertPosition::Floating
+                            } else {
+                                let pos_within_workspace =
+                                    (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
+                                let ws = &mut mon.workspaces[ws_idx];
+                                ws.scrolling_insert_position(pos_within_workspace)
+                            };
 
-                                (position, None)
-                            }
-                        };
+                            (position, Some(geo.loc))
+                        }
+                        InsertWorkspace::NewAt(_) => {
+                            let position = if move_.is_floating {
+                                InsertPosition::Floating
+                            } else {
+                                InsertPosition::NewColumn(0)
+                            };
 
-                        (mon, insert_ws, position, offset, zoom)
-                    } else {
-                        let mon = &mut monitors[*active_monitor_idx];
-                        let zoom = mon.overview_zoom();
-                        // No point in trying to use the pointer position on the wrong output.
-                        let ws = &mon.workspaces[0];
-                        let ws_geo = mon.workspaces_render_geo().next().unwrap();
-
-                        let position = if move_.is_floating {
-                            InsertPosition::Floating
-                        } else {
-                            ws.scrolling_insert_position(Point::from((0., 0.)))
-                        };
-
-                        let insert_ws = InsertWorkspace::Existing(ws.id());
-                        (mon, insert_ws, position, Some(ws_geo.loc), zoom)
+                            (position, None)
+                        }
                     };
+
+                    (mon, insert_ws, position, offset, zoom)
+                } else {
+                    let mon = &mut monitors[*active_monitor_idx];
+                    let zoom = mon.overview_zoom();
+                    // No point in trying to use the pointer position on the wrong output.
+                    let ws = &mon.workspaces[0];
+                    let ws_geo = mon.workspaces_render_geo().next().unwrap();
+
+                    let position = if move_.is_floating {
+                        InsertPosition::Floating
+                    } else {
+                        ws.scrolling_insert_position(Point::from((0., 0.)))
+                    };
+
+                    let insert_ws = InsertWorkspace::Existing(ws.id());
+                    (mon, insert_ws, position, Some(ws_geo.loc), zoom)
+                };
 
                 let win_id = move_.tile.window().id().clone();
                 let tile_render_loc = move_.tile_render_location(zoom);
@@ -4312,7 +4378,10 @@ impl<W: LayoutElement> Layout<W> {
                     }
                     InsertPosition::Floating => {
                         let mut tile = move_.tile;
-                        tile.floating_pos = None;
+                        // Going back keeps the position it had before the move.
+                        if !returning {
+                            tile.floating_pos = None;
+                        }
 
                         match insert_ws {
                             InsertWorkspace::Existing(_) => {
@@ -4321,7 +4390,7 @@ impl<W: LayoutElement> Layout<W> {
                                     let pos =
                                         mon.workspaces[ws_idx].floating_logical_to_size_frac(pos);
                                     tile.floating_pos = Some(pos);
-                                } else {
+                                } else if !returning {
                                     error!(
                                         "offset unset for inserting a floating tile \
                                          to existing workspace"
@@ -5059,6 +5128,57 @@ impl<W: LayoutElement> Layout<W> {
 impl<W: LayoutElement> Default for MonitorSet<W> {
     fn default() -> Self {
         Self::NoOutputs { workspaces: vec![] }
+    }
+}
+
+/// Where window `id` sits on `ws`, as a position to insert it back at once it is removed.
+fn move_origin<W: LayoutElement>(ws: &Workspace<W>, id: &W::Id) -> Option<MoveOrigin> {
+    let position = if ws.is_floating(id) {
+        InsertPosition::Floating
+    } else {
+        let (column_idx, tile_idx, column_len) =
+            ws.scrolling()
+                .columns()
+                .enumerate()
+                .find_map(|(column_idx, column)| {
+                    let tile_idx = column
+                        .tiles()
+                        .position(|(tile, _)| tile.window().id() == id)?;
+                    Some((column_idx, tile_idx, column.tiles().count()))
+                })?;
+        // A column the window had to itself goes away when the window is removed.
+        if column_len == 1 {
+            InsertPosition::NewColumn(column_idx)
+        } else {
+            InsertPosition::InColumn(column_idx, tile_idx)
+        }
+    };
+    Some(MoveOrigin {
+        workspace: ws.id(),
+        position,
+    })
+}
+
+/// `position` limited to the columns and tiles `ws` has now, which may have changed while the
+/// window was away.
+fn clamp_insert_position<W: LayoutElement>(
+    ws: &Workspace<W>,
+    position: InsertPosition,
+) -> InsertPosition {
+    let columns: Vec<usize> = ws
+        .scrolling()
+        .columns()
+        .map(|column| column.tiles().count())
+        .collect();
+    match position {
+        InsertPosition::Floating => position,
+        InsertPosition::NewColumn(column_idx) => {
+            InsertPosition::NewColumn(column_idx.min(columns.len()))
+        }
+        InsertPosition::InColumn(column_idx, tile_idx) => match columns.get(column_idx) {
+            Some(len) => InsertPosition::InColumn(column_idx, tile_idx.min(*len)),
+            None => InsertPosition::NewColumn(columns.len()),
+        },
     }
 }
 

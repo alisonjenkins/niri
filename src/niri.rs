@@ -4035,6 +4035,32 @@ impl Niri {
         self.resolve_output_under(pos).is_some_and(|hit| hit.band)
     }
 
+    /// Moves the interactive move of `window` by `delta` for the pointer at global `pos`,
+    /// targeting what is under it through any projection. An overview band's background is no
+    /// target, so a drop there puts the window back. `None` when `pos` is on no output.
+    pub fn interactive_move_update_at(
+        &mut self,
+        window: &Window,
+        delta: Point<f64, Logical>,
+        pos: Point<f64, Logical>,
+    ) -> Option<bool> {
+        let hit = self.resolve_output_under(pos)?;
+        let output = hit.output.clone();
+        let pos_within_output = hit.pos_within_output;
+        let ongoing = if hit.band {
+            self.layout.interactive_move_update_without_target(
+                window,
+                delta,
+                output,
+                pos_within_output,
+            )
+        } else {
+            self.layout
+                .interactive_move_update(window, delta, output, pos_within_output)
+        };
+        Some(ongoing)
+    }
+
     /// The physical monitor whose overview band, tiles included, is under `pos`.
     ///
     /// Decided by the physical output, so scrolling over a tile scrolls the column rather than
