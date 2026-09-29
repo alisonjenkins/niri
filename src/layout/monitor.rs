@@ -293,6 +293,24 @@ impl From<&super::OverviewProgress> for OverviewProgress {
     }
 }
 
+/// Places a workspace-local element at the workspace's overview zoom and position.
+fn scale_relocate<R: NiriRenderer>(
+    elem: MonitorInnerRenderElement<R>,
+    zoom: f64,
+    scale: f64,
+    ws_geo: Rectangle<f64, Logical>,
+) -> MonitorRenderElement<R> {
+    let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), zoom);
+    RelocateRenderElement::from_element(
+        elem,
+        // The offset we get from workspaces_with_render_geo() is already
+        // rounded to physical pixels, but it's in the logical coordinate
+        // space, so we need to convert it to physical.
+        ws_geo.loc.to_physical_precise_round(scale),
+        Relocate::Relative,
+    )
+}
+
 impl<W: LayoutElement> Monitor<W> {
     pub fn new(
         output: Output,
@@ -1758,6 +1776,31 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
+    /// Renders one workspace as the overview draws it, including its background and shadow,
+    /// wherever it is relative to the output.
+    pub fn render_workspace_overview<R: NiriRenderer>(
+        &self,
+        ws_idx: usize,
+        mut ctx: RenderCtx<R>,
+        focus_ring: bool,
+        push: &mut dyn FnMut(MonitorRenderElement<R>),
+    ) {
+        let Some((ws, geo)) = self.workspaces_with_render_geo_cull(false).nth(ws_idx) else {
+            return;
+        };
+
+        for pass in 0..4 {
+            self.render_workspace_pass(ctx.r(), ws, geo, pass, focus_ring, push);
+        }
+
+        let scale = self.scale.fractional_scale();
+        let zoom = self.overview_zoom();
+        let background = MonitorInnerRenderElement::SolidColor(ws.render_background());
+        push(scale_relocate(background, zoom, scale, geo));
+
+        self.render_workspace_shadow(ctx.renderer, ws, geo, push);
+    }
+
     /// Renders one of the `render_workspaces` passes for a single workspace at `geo`.
     fn render_workspace_pass<R: NiriRenderer>(
         &self,
@@ -1777,18 +1820,6 @@ impl<W: LayoutElement> Monitor<W> {
         let insert_hint_render_loc = self
             .insert_hint_render_loc
             .filter(|_| !self.options.layout.insert_hint.off);
-
-        let scale_relocate = move |geo: Rectangle<f64, Logical>, elem| {
-            let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), zoom);
-            RelocateRenderElement::from_element(
-                elem,
-                // The offset we get from workspaces_with_render_geo() is already
-                // rounded to physical pixels, but it's in the logical coordinate
-                // space, so we need to convert it to physical.
-                geo.loc.to_physical_precise_round(scale),
-                Relocate::Relative,
-            )
-        };
 
         let cull = matches!(pass, 1 | 3);
 
@@ -1828,7 +1859,7 @@ impl<W: LayoutElement> Monitor<W> {
                     let elem = CropRenderElement::from_element(elem, scale, crop_bounds);
                     if let Some(elem) = elem {
                         let elem = MonitorInnerRenderElement::from(elem);
-                        push(scale_relocate(geo, elem));
+                        push(scale_relocate(elem, zoom, scale, geo));
                     }
                 }
             }};
@@ -1903,15 +1934,8 @@ impl<W: LayoutElement> Monitor<W> {
         let zoom = self.overview_zoom();
 
         ws.render_shadow(renderer, &mut |elem| {
-            let elem = elem.with_alpha(alpha);
-            let elem = MonitorInnerRenderElement::Shadow(elem);
-            let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), zoom);
-            let elem = RelocateRenderElement::from_element(
-                elem,
-                geo.loc.to_physical_precise_round(scale),
-                Relocate::Relative,
-            );
-            push(elem);
+            let elem = MonitorInnerRenderElement::Shadow(elem.with_alpha(alpha));
+            push(scale_relocate(elem, zoom, scale, geo));
         });
     }
 
