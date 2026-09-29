@@ -29,6 +29,8 @@ const VIEW_OUTPUT_LABEL_DURATION: Duration = Duration::from_secs(2);
 
 pub struct ViewOutputLabel {
     state: State,
+    /// Name of the only output the label is drawn on.
+    output: String,
     text: String,
     buffers: RefCell<HashMap<NotNan<f64>, Option<TextureBuffer<GlesTexture>>>>,
 
@@ -47,6 +49,7 @@ impl ViewOutputLabel {
     pub fn new(clock: Clock, config: Rc<RefCell<Config>>) -> Self {
         Self {
             state: State::Hidden,
+            output: String::new(),
             text: String::new(),
             buffers: RefCell::new(HashMap::new()),
             clock,
@@ -74,13 +77,15 @@ impl ViewOutputLabel {
         )
     }
 
-    pub fn show(&mut self, text: String) {
+    pub fn show(&mut self, output: &str, text: String) {
         debug!(
+            output,
             text,
             previous_state = self.state_label(),
             "showing view-output label"
         );
 
+        output.clone_into(&mut self.output);
         if self.text != text {
             self.text = text;
             self.buffers.borrow_mut().clear();
@@ -128,19 +133,24 @@ impl ViewOutputLabel {
         !matches!(self.state, State::Hidden)
     }
 
+    /// The text currently visible on `output`, if any.
+    pub fn text_on(&self, output: &str) -> Option<&str> {
+        if matches!(self.state, State::Hidden) || self.output != output {
+            return None;
+        }
+        Some(&self.text)
+    }
+
     pub fn render<R: NiriRenderer>(
         &self,
         renderer: &mut R,
         output: &Output,
     ) -> Option<PrimaryGpuTextureRenderElement> {
-        if matches!(self.state, State::Hidden) {
-            return None;
-        }
+        let text = self.text_on(&output.name())?.to_owned();
 
         let scale = output.current_scale().fractional_scale();
         let scale_key = NotNan::new(scale).ok()?;
         let output_size = output_size(output);
-        let text = self.text.clone();
         let text_len = text.len();
 
         let mut buffers = self.buffers.borrow_mut();
@@ -214,7 +224,7 @@ mod tests {
     fn show_starts_showing() {
         let mut label = label_at(Duration::ZERO);
 
-        label.show("Viewing: steam".to_owned());
+        label.show("DP-2", "Viewing: steam".to_owned());
 
         assert!(label.are_animations_ongoing());
         assert!(matches!(label.state, State::Showing(_)));
@@ -224,7 +234,7 @@ mod tests {
     #[test]
     fn show_animation_completes_into_shown_then_hides_after_duration() {
         let mut label = label_at(Duration::ZERO);
-        label.show("Viewing: steam".to_owned());
+        label.show("DP-2", "Viewing: steam".to_owned());
 
         finish_animation(&mut label);
         assert!(matches!(label.state, State::Shown(_)));
@@ -252,11 +262,11 @@ mod tests {
     #[test]
     fn show_while_shown_restarts_with_new_text() {
         let mut label = label_at(Duration::ZERO);
-        label.show("Viewing: steam".to_owned());
+        label.show("DP-2", "Viewing: steam".to_owned());
         finish_animation(&mut label);
         assert!(matches!(label.state, State::Shown(_)));
 
-        label.show("Stopped viewing steam: output removed".to_owned());
+        label.show("DP-2", "Stopped viewing steam: output removed".to_owned());
 
         assert!(matches!(label.state, State::Showing(_)));
         assert_eq!(label.text, "Stopped viewing steam: output removed");
@@ -265,12 +275,27 @@ mod tests {
     #[test]
     fn hide_moves_to_hiding() {
         let mut label = label_at(Duration::ZERO);
-        label.show("Viewing: steam".to_owned());
+        label.show("DP-2", "Viewing: steam".to_owned());
         finish_animation(&mut label);
 
         label.hide();
 
         assert!(matches!(label.state, State::Hiding(_)));
+    }
+
+    #[test]
+    fn text_is_shown_only_on_the_output_it_was_shown_for() {
+        let mut label = label_at(Duration::ZERO);
+        assert_eq!(label.text_on("DP-2"), None);
+
+        label.show("DP-2", "Viewing: steam".to_owned());
+
+        assert_eq!(label.text_on("DP-2"), Some("Viewing: steam"));
+        assert_eq!(label.text_on("steam"), None);
+
+        label.show("HDMI-A-1", "Viewing: aux".to_owned());
+        assert_eq!(label.text_on("DP-2"), None);
+        assert_eq!(label.text_on("HDMI-A-1"), Some("Viewing: aux"));
     }
 
     #[test]
