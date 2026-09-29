@@ -190,6 +190,76 @@ niri msg output steam mode 3840x2160@60
 
 Removing the `virtual-output` section removes the output on the next config reload. Outputs created over IPC are left alone by config reloads, since they belong to whoever asked for them.
 
+## Overview columns
+
+Every virtual output that is on gets its own column in the overview, to the right of the physical monitor's own workspaces, labelled with the virtual output's name. That column is the virtual output's real overview: the same workspaces and windows, at the same zoom.
+
+Dragging works in both directions and between any two outputs, physical or virtual: drag a window from a column onto one of the physical monitor's workspaces, or the other way round. Dropping into the gap between two workspaces in any column creates a workspace there, exactly as it does for a physical monitor. Clicking a workspace in a virtual output's column closes the overview and enters view mode on that output, with that workspace active. Clicking one of the physical monitor's own workspaces behaves as it always has.
+
+If the columns and the monitor's own workspaces do not all fit, the columns shrink to fit. The monitor's own workspaces keep their normal size and never move. A virtual output that is off has no column, and turning one on or off while the overview is open adds or removes its column without closing the overview.
+
+## View mode
+
+View mode puts one virtual output's live content on a physical monitor.
+
+```bash
+niri msg view-output steam
+# Viewing steam on DP-2
+
+niri msg view-output
+# Stopped viewing steam on DP-2
+
+niri msg --json view-output
+```
+
+Running `view-output` with no name while nothing is being viewed changes nothing and prints `Not viewing any output`.
+
+Bind it in `config.kdl`:
+
+```kdl
+binds {
+    Mod+V { view-output "steam"; }
+    Mod+Shift+V { view-output; }
+}
+```
+
+While viewing, the virtual output's content fills the physical monitor as far as its aspect ratio allows, with the rest of the screen as plain black bars. Overlay-layer surfaces, such as notifications, stay drawn on top of the projected content, but the monitor's own top-layer bar is hidden while viewing, the same way a fullscreen window hides it. A "Viewing: `<name>`" label shows on the monitor for 2 seconds.
+
+Pointer input on the monitor reaches the virtual output at the matching position: clicks, scrolling and focus changes go through to whatever is under that point. A click in the bars reaches nothing. Entering view mode makes the virtual output the active monitor, so window-management commands act on it instead of the physical one.
+
+Opening the overview while viewing shows the normal overview, with the physical monitor's own workspaces and every virtual output's column, including the one being viewed. Closing the overview returns to view mode.
+
+View mode ends on its own, with a one-line notice on the monitor, if the virtual output being viewed turns off or is removed, or if the physical monitor showing it goes away. Running `niri msg view-output` with no name also ends it and returns the monitor to its own workspaces.
+
+### Errors
+
+`view-output` fails without changing anything, naming the output and the reason:
+
+| Situation | Message |
+|---|---|
+| Name does not exist | `virtual output "<name>" not found` |
+| Name is a physical output | `output "<name>" is not a virtual output` |
+| Virtual output is off | `virtual output "<name>" is off` |
+| No physical monitor to show it on | `no physical output to view "<name>" on` |
+
+## Interaction with streams
+
+Showing a virtual output in the overview or in view mode never changes what the virtual output itself renders, and never interrupts a screencast or capture of it. The projection is a second render of the same content, layered on top of the physical monitor's own picture; the virtual output's own render path is untouched.
+
+The desk user's cursor stays on the physical monitor and is not drawn on the virtual output or into its stream. niri draws the pointer on a virtual output only while the pointer is physically over it, which is where a streaming client's own input puts it, so that client still sees its cursor.
+
+## Security and limitations
+
+Nothing is projected while the session is locked. A locked session would otherwise let its pointer and pixels reach another output through the projection; projections come back after unlocking, and a `view-output` in progress at lock time picks up again once the session unlocks.
+
+Hot corners always act on the physical monitor the pointer is really over, never on whatever output a projection maps that position to.
+
+Known limitations:
+
+- A remote client and the desk user can move the pointer on a virtual output at the same time; nothing arbitrates between them.
+- Content scaled to fit a physical monitor, or shrunk to fit an overview column, can look softer than at its native resolution.
+- Dragging inside a shrunk overview column measures the drag distance in the physical monitor's pixels, not the virtual output's own, so the drag moves slightly more or less than it visually looks like it should. Where you drop still lands correctly, since the drop target comes from the position, not the distance dragged.
+
 ## Limitations
 
 - Virtual outputs are not supported when running niri nested in another Wayland compositor (Winit backend)
