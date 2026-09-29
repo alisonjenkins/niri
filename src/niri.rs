@@ -3447,12 +3447,7 @@ impl Niri {
     /// [`Self::output_under`], also saying whether the position went
     /// through a projection.
     fn resolve_output_under(&self, pos: Point<f64, Logical>) -> Option<OutputUnder<'_>> {
-        let output = self.global_space.output_under(pos).next()?;
-        let Some(output_geo) = self.global_space.output_geometry(output) else {
-            debug!(output = %output.name(), "output has no geometry in global_space");
-            return None;
-        };
-        let pos_within_output = pos - output_geo.loc.to_f64();
+        let (output, pos_within_output) = self.physical_output_under(pos)?;
 
         let viewer_name = output.name();
         let mut inside_view_projection = false;
@@ -3494,6 +3489,39 @@ impl Niri {
             pos_within_output,
             projected: false,
         })
+    }
+
+    /// The output a global position physically lies on, ignoring projections.
+    fn physical_output_under(
+        &self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(&Output, Point<f64, Logical>)> {
+        let output = self.global_space.output_under(pos).next()?;
+        let Some(output_geo) = self.global_space.output_geometry(output) else {
+            debug!(output = %output.name(), "output has no geometry in global_space");
+            return None;
+        };
+        Some((output, pos - output_geo.loc.to_f64()))
+    }
+
+    /// Whether a resolved position is in a hot corner.
+    ///
+    /// Hot corners belong to the screen the pointer is on, so a projected
+    /// position is checked against the viewer's real geometry, never the
+    /// source's.
+    fn is_hit_in_hot_corner(&self, hit: &OutputUnder, pos: Point<f64, Logical>) -> bool {
+        if hit.projected {
+            self.is_inside_physical_hot_corner(pos)
+        } else {
+            self.is_inside_hot_corner(hit.output, hit.pos_within_output)
+        }
+    }
+
+    fn is_inside_physical_hot_corner(&self, pos: Point<f64, Logical>) -> bool {
+        self.physical_output_under(pos)
+            .is_some_and(|(output, pos_within_output)| {
+                self.is_inside_hot_corner(output, pos_within_output)
+            })
     }
 
     fn is_inside_hot_corner(&self, output: &Output, pos: Point<f64, Logical>) -> bool {
@@ -3539,11 +3567,10 @@ impl Niri {
         false
     }
 
-    pub fn is_sticky_obscured_under(
-        &self,
-        output: &Output,
-        pos_within_output: Point<f64, Logical>,
-    ) -> bool {
+    fn is_sticky_obscured_under(&self, hit: &OutputUnder, pos: Point<f64, Logical>) -> bool {
+        let output = hit.output;
+        let pos_within_output = hit.pos_within_output;
+
         // The ordering here must be consistent with the ordering in render() so that input is
         // consistent with the visuals.
 
@@ -3582,7 +3609,7 @@ impl Niri {
             return false;
         }
 
-        if self.is_inside_hot_corner(output, pos_within_output) {
+        if self.is_hit_in_hot_corner(hit, pos) {
             return true;
         }
 
@@ -3649,9 +3676,10 @@ impl Niri {
             return None;
         }
 
-        let (output, pos_within_output) = self.output_under(pos)?;
+        let hit = self.resolve_output_under(pos)?;
+        let (output, pos_within_output) = (hit.output, hit.pos_within_output);
 
-        if self.is_sticky_obscured_under(output, pos_within_output) {
+        if self.is_sticky_obscured_under(&hit, pos) {
             return None;
         }
 
@@ -3686,9 +3714,10 @@ impl Niri {
             return None;
         }
 
-        let (output, pos_within_output) = self.output_under(pos)?;
+        let hit = self.resolve_output_under(pos)?;
+        let (output, pos_within_output) = (hit.output, hit.pos_within_output);
 
-        if self.is_sticky_obscured_under(output, pos_within_output) {
+        if self.is_sticky_obscured_under(&hit, pos) {
             return None;
         }
 
@@ -3726,8 +3755,16 @@ impl Niri {
         let mut rv = PointContents::default();
 
         let Some(hit) = self.resolve_output_under(pos) else {
+            // A view-mode letterbox bar hits nothing, but the viewer's own hot
+            // corners are there.
+            rv.hot_corner = !self.exit_confirm_dialog.is_open()
+                && !self.is_locked()
+                && !self.screenshot_ui.is_open()
+                && !self.window_mru_ui.is_open()
+                && self.is_inside_physical_hot_corner(pos);
             return rv;
         };
+        let in_hot_corner = self.is_hit_in_hot_corner(&hit, pos);
         let OutputUnder {
             output,
             pos_within_output,
@@ -3875,7 +3912,7 @@ impl Niri {
                 .or_else(|| layer_toplevel_under(Layer::Bottom))
                 .or_else(|| layer_toplevel_under(Layer::Background));
         } else {
-            if self.is_inside_hot_corner(output, pos_within_output) {
+            if in_hot_corner {
                 rv.hot_corner = true;
                 return rv;
             }
