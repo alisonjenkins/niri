@@ -4649,7 +4649,9 @@ mod overview_drag_tests {
     use smithay::output::Output;
     use smithay::utils::{Logical, Point, Rectangle};
 
-    use super::overview_band_tests::{move_pointer_to, refresh, set_up, toggle_overview};
+    use super::overview_band_tests::{
+        full_band, move_pointer_to, refresh, set_up, toggle_overview,
+    };
     use super::overview_tests::{map_window_on, output_named, tile_for, window_center_on};
     use crate::niri::Niri;
     use crate::tests::fixture::Fixture;
@@ -4902,6 +4904,68 @@ mod overview_drag_tests {
         drag(&mut f, from, to);
 
         assert_eq!(windows_by_workspace(f.niri(), &steam)[0], [t, s]);
+    }
+
+    #[test]
+    fn dropping_on_the_band_background_leaves_the_window_where_it_was() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        let s = map_window_on(&mut f, id, &steam, 400, 300);
+        let t = map_window_on(&mut f, id, &steam, 400, 300);
+        let u = map_window_on(&mut f, id, &steam, 300, 200);
+        f.niri().layout.toggle_window_floating(Some(&u));
+        map_window_on(&mut f, id, &viewer, 400, 300);
+        f.niri().layout.focus_output(&viewer);
+        f.niri_complete_animations();
+        toggle_overview(&mut f);
+        let floating_pos = |f: &mut Fixture| {
+            let niri = f.niri();
+            let (ws, _) = niri
+                .layout
+                .monitor_for_output(&steam)
+                .unwrap()
+                .workspaces_with_render_geo_cull(false)
+                .next()
+                .unwrap();
+            assert!(ws.is_floating(&u));
+            ws.tiles_with_render_positions()
+                .find(|(tile, _, _)| tile.window().window == u)
+                .map(|(_, pos, _)| pos)
+                .unwrap()
+        };
+        let before = (
+            windows_by_workspace(f.niri(), &viewer),
+            windows_by_workspace(f.niri(), &steam),
+        );
+        let u_pos = floating_pos(&mut f);
+        assert!(before.1[0].starts_with(&[s.clone(), t.clone()]));
+
+        for window in [&s, &t, &u] {
+            let from = in_tile(&mut f, &steam, window);
+            let background = full_band().loc + Point::from((2., 700.));
+            press_and_move(&mut f, from, background);
+            assert!(f.niri().layout.interactive_move_pointer().is_some());
+            f.niri().update_render_elements(None);
+            for output in [&viewer, &steam] {
+                let hint = f
+                    .niri()
+                    .layout
+                    .monitor_for_output(output)
+                    .unwrap()
+                    .insert_hint_workspace();
+                assert_eq!(hint, None, "an insert hint on {}", output.name());
+            }
+            release(&mut f);
+
+            let after = (
+                windows_by_workspace(f.niri(), &viewer),
+                windows_by_workspace(f.niri(), &steam),
+            );
+            assert_eq!(after, before);
+            assert_eq!(floating_pos(&mut f), u_pos);
+        }
     }
 
     #[test]
