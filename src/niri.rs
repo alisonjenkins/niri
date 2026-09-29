@@ -203,6 +203,9 @@ use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
 
 const CLEAR_COLOR_LOCKED: [f32; 4] = [0.3, 0.1, 0.1, 1.];
+/// Plain black bars around a source in view mode (FR-008), independent of
+/// the viewer's configured backdrop colour.
+const VIEW_BACKDROP_COLOR: [f32; 4] = [0., 0., 0., 1.];
 
 // We'll try to send frame callbacks at least once a second. We'll make a timer that fires once a
 // second, so with the worst timing the maximum interval between two frame callbacks for a surface
@@ -532,6 +535,8 @@ pub struct OutputState {
     pub lock_render_state: LockRenderState,
     pub lock_surface: Option<LockSurface>,
     pub lock_color_buffer: SolidColorBuffer,
+    /// Fills the letterbox bars around a source shown in view mode.
+    view_backdrop_buffer: SolidColorBuffer,
     screen_transition: Option<ScreenTransition>,
     /// Damage tracker used for the debug damage visualization.
     pub debug_damage_tracker: OutputDamageTracker,
@@ -3076,6 +3081,7 @@ impl Niri {
             lock_render_state,
             lock_surface: None,
             lock_color_buffer: SolidColorBuffer::new(size, CLEAR_COLOR_LOCKED),
+            view_backdrop_buffer: SolidColorBuffer::new(size, VIEW_BACKDROP_COLOR),
             screen_transition: None,
             debug_damage_tracker: OutputDamageTracker::from_output(&output),
         };
@@ -3204,6 +3210,7 @@ impl Niri {
             state.backdrop_buffer.resize(output_size);
 
             state.lock_color_buffer.resize(output_size);
+            state.view_backdrop_buffer.resize(output_size);
             if let Some(lock_surface) = &state.lock_surface {
                 configure_lock_surface(lock_surface, output);
             }
@@ -3556,8 +3563,23 @@ impl Niri {
     /// through a projection.
     fn resolve_output_under(&self, pos: Point<f64, Logical>) -> Option<OutputUnder<'_>> {
         let (output, pos_within_output) = self.physical_output_under(pos)?;
+        let unprojected = OutputUnder {
+            output,
+            pos_within_output,
+            projected: false,
+        };
 
         let viewer_name = output.name();
+        let is_viewer = self
+            .projection_state
+            .projections
+            .iter()
+            .any(|p| p.viewer == viewer_name);
+        // The viewer's overlay layer is drawn above its projections.
+        if is_viewer && self.is_overlay_layer_surface_under(output, pos_within_output) {
+            return Some(unprojected);
+        }
+
         let mut inside_view_projection = false;
         for projection in &self.projection_state.projections {
             if projection.viewer != viewer_name {
@@ -3592,11 +3614,30 @@ impl Niri {
             return None;
         }
 
-        Some(OutputUnder {
-            output,
-            pos_within_output,
-            projected: false,
-        })
+        Some(unprojected)
+    }
+
+    /// Whether a mapped overlay-layer surface on `output` is under the
+    /// position.
+    fn is_overlay_layer_surface_under(
+        &self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+    ) -> bool {
+        let layers = layer_map_for_output(output);
+        let under = layers.layers_on(Layer::Overlay).any(|layer| {
+            let Some(mapped) = self.mapped_layer_surfaces.get(layer) else {
+                return false;
+            };
+            let Some(geo) = layers.layer_geometry(layer) else {
+                return false;
+            };
+            let layer_pos = geo.loc.to_f64() + mapped.bob_offset();
+            layer
+                .surface_under(pos_within_output - layer_pos, WindowSurfaceType::ALL)
+                .is_some()
+        });
+        under
     }
 
     /// The output a global position physically lies on, ignoring projections.
@@ -4995,6 +5036,31 @@ impl Niri {
         push_popups_from_layer!(Layer::Overlay);
         push_normal_from_layer!(Layer::Overlay);
 
+        // View mode replaces everything below the overlay layer: like a
+        // fullscreen window, the source hides the viewer's bars (top layer)
+        // while notifications and OSDs (overlay) stay on top.
+        if let Some(projection) = self.view_projection_on(output) {
+            // rebuild_projections runs whenever outputs change, so a missing
+            // source only means this frame raced a removal.
+            if let Some(source) = self
+                .layout
+                .outputs()
+                .find(|o| o.name() == projection.source)
+            {
+                self.render_projected_source(ctx.r(), projection, source, output_scale.x, push);
+            }
+            push(
+                SolidColorRenderElement::from_buffer(
+                    &state.view_backdrop_buffer,
+                    (0., 0.),
+                    1.,
+                    Kind::Unspecified,
+                )
+                .into(),
+            );
+            return;
+        }
+
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
         if mon.render_above_top_layer() {
@@ -5115,22 +5181,49 @@ impl Niri {
                 push(label.into());
             }
 
-            let source_scale = source.current_scale().fractional_scale();
-            let crop = projection.region.to_physical_precise_round(viewer_scale);
-
-            self.render(ctx.r(), source, false, &mut |elem| {
-                let elem = ProjectedElement::new(
-                    elem,
-                    source_scale,
-                    projection.source_rect,
-                    viewer_scale,
-                    projection.region,
-                );
-                if let Some(elem) = CropRenderElement::from_element(elem, viewer_scale, crop) {
-                    push(OutputRenderElements::Projected(elem));
-                }
-            });
+            self.render_projected_source(ctx.r(), projection, source, viewer_scale, push);
         }
+    }
+
+    /// The `View` projection `output` shows instead of its own workspaces.
+    fn view_projection_on(&self, output: &Output) -> Option<&Projection> {
+        // A virtual output never shows other outputs (FR-018). This also
+        // keeps the nested render of the source from recursing.
+        if is_virtual_output(output) {
+            return None;
+        }
+        let name = output.name();
+        self.projection_state
+            .projections
+            .iter()
+            .find(|p| p.kind == ProjectionKind::View && p.viewer == name)
+    }
+
+    /// Renders `source` scaled from `projection.source_rect` into
+    /// `projection.region` on the viewer, cropped to the region.
+    fn render_projected_source<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        projection: &Projection,
+        source: &Output,
+        viewer_scale: f64,
+        push: &mut dyn FnMut(OutputRenderElements<R>),
+    ) {
+        let source_scale = source.current_scale().fractional_scale();
+        let crop = projection.region.to_physical_precise_round(viewer_scale);
+
+        self.render(ctx.r(), source, false, &mut |elem| {
+            let elem = ProjectedElement::new(
+                elem,
+                source_scale,
+                projection.source_rect,
+                viewer_scale,
+                projection.region,
+            );
+            if let Some(elem) = CropRenderElement::from_element(elem, viewer_scale, crop) {
+                push(OutputRenderElements::Projected(elem));
+            }
+        });
     }
 
     pub fn fill_xray_elements(&self, mut ctx: RenderCtx<GlesRenderer>, output: &Output) {
