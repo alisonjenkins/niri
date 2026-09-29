@@ -4200,6 +4200,16 @@ impl Niri {
         self.output_under(pos).map(|(output, _)| output.clone())
     }
 
+    /// Whether the real cursor is inside `output`'s own geometry, ignoring projections.
+    fn pointer_is_over(&self, output: &Output) -> bool {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return false;
+        };
+        self.global_space
+            .output_geometry(output)
+            .is_some_and(|geo| geo.to_f64().contains(pointer.current_location()))
+    }
+
     pub fn output_left_of(&self, current: &Output) -> Option<Output> {
         let current_geo = self.global_space.output_geometry(current)?;
         let extended_geo = Rectangle::new(
@@ -4978,7 +4988,12 @@ impl Niri {
         };
 
         // The pointer goes on the top.
-        if include_pointer && self.pointer_visibility.is_visible() {
+        //
+        // A virtual output only gets the pointer while it is physically over it (a streaming
+        // client's cursor); a desk cursor on a viewer that shows the output must not leak into
+        // the output's own render or its stream (FR-017).
+        let pointer_belongs_here = !is_virtual_output(output) || self.pointer_is_over(output);
+        if include_pointer && self.pointer_visibility.is_visible() && pointer_belongs_here {
             self.render_pointer(ctx.renderer, output, &mut |elem| push(elem.into()));
         }
 
