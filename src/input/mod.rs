@@ -2543,13 +2543,13 @@ impl State {
         let spatial_grab = pointer.with_grab(|_, grab| {
             let grab = grab.as_any();
             if let Some(grab) = grab.downcast_ref::<SpatialMovementGrab>() {
-                if let Some(output) = grab.view_offset_output() {
+                if let Some(output) = grab.view_offset_pointer_output() {
                     return Some((output.clone(), true));
-                } else if let Some(output) = grab.workspace_switch_output() {
+                } else if let Some(output) = grab.workspace_switch_pointer_output() {
                     return Some((output.clone(), false));
                 }
             } else if let Some(grab) = grab.downcast_ref::<MoveGrab>() {
-                if let Some(output) = grab.view_offset_output() {
+                if let Some(output) = grab.view_offset_pointer_output() {
                     return Some((output.clone(), true));
                 }
             }
@@ -2899,7 +2899,9 @@ impl State {
                     self.niri
                         .layout
                         .view_offset_gesture_begin(&output, Some(ws_idx), false);
-                    let grab = SpatialMovementGrab::new(start_data, output, ws_id, true);
+                    let pointer_output = self.niri.physical_output_at(location, &output);
+                    let grab =
+                        SpatialMovementGrab::new(start_data, output, pointer_output, ws_id, true);
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri
                         .cursor_manager
@@ -2934,7 +2936,9 @@ impl State {
                         button: button_code,
                         location,
                     };
-                    let grab = SpatialMovementGrab::new(start_data, output, ws_id, false);
+                    let pointer_output = self.niri.physical_output_at(location, &output);
+                    let grab =
+                        SpatialMovementGrab::new(start_data, output, pointer_output, ws_id, false);
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri
                         .cursor_manager

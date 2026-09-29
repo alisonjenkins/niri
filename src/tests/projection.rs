@@ -1888,12 +1888,16 @@ mod view_render_tests {
 mod input_tests {
     use niri_config::input::{WarpMouseToFocus, WarpMouseToFocusMode};
     use niri_config::{Action, Config};
+    use smithay::input::pointer::{Focus, GrabStartData as PointerGrabStartData};
     use smithay::output::Output;
-    use smithay::utils::{Logical, Point, Rectangle};
+    use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 
     use super::overview_tests::{map_window_on, output_named, window_center_on};
+    use crate::input::move_grab::MoveGrab;
+    use crate::input::AnyStartData;
     use crate::projection::{Projection, ProjectionKind};
     use crate::tests::fixture::Fixture;
+    use crate::tests::input;
 
     fn set_up_with(config: Config, viewer: (u16, u16), sources: &[(&str, u16, u16)]) -> Fixture {
         let mut f = Fixture::with_config(config);
@@ -1984,5 +1988,94 @@ mod input_tests {
         f.niri_state().do_action(Action::FocusColumnLeft, false);
 
         assert_eq!(pointer(&mut f), Point::from((960., 540.)));
+    }
+
+    fn open_overview(f: &mut Fixture) {
+        f.niri().layout.toggle_overview();
+        f.niri_complete_animations();
+        assert!(f.niri().layout.is_overview_open());
+    }
+
+    fn overview_projection(f: &mut Fixture, source: &str) -> Projection {
+        f.niri()
+            .projection_state
+            .projections
+            .iter()
+            .find(|p| p.kind == ProjectionKind::Overview && p.source == source)
+            .unwrap()
+            .clone()
+    }
+
+    fn center(rect: Rectangle<f64, Logical>) -> Point<f64, Logical> {
+        rect.loc + rect.size.downscale(2.).to_point()
+    }
+
+    #[test]
+    fn right_drag_in_a_source_column_keeps_the_pointer_on_the_viewer() {
+        let mut f = set_up_with(Config::default(), (5120, 1440), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        open_overview(&mut f);
+        let viewer_geo = geometry(&mut f, &viewer);
+        let start = center(overview_projection(&mut f, "steam").region) + viewer_geo.loc;
+        f.niri_state().move_cursor(start);
+
+        input::pointer_button(&mut f, input::BTN_RIGHT, true);
+        for _ in 0..3 {
+            input::pointer_motion(&mut f, (20., 5.));
+        }
+
+        let p = pointer(&mut f);
+        let expected = start + Point::from((60., 15.));
+        assert!(
+            viewer_geo.contains(p)
+                && (p - expected).x.abs() < 1e-6
+                && (p - expected).y.abs() < 1e-6,
+            "pointer {p:?} should have moved to {expected:?} on the viewer {viewer_geo:?}"
+        );
+        input::pointer_button(&mut f, input::BTN_RIGHT, false);
+    }
+
+    /// A client's titlebar drag (xdg_toplevel.move) starts a `MoveGrab` with view offset
+    /// enabled. The test client has no seat to send that request, so this installs the grab
+    /// the way the xdg-shell handler does and drives it with real pointer motion.
+    #[test]
+    fn horizontal_titlebar_drag_in_view_mode_keeps_the_pointer_on_the_viewer() {
+        let mut f = set_up_with(Config::default(), (1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let window = map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        let viewer_geo = geometry(&mut f, &viewer);
+        let start = view_projection(&mut f).to_viewer(window_center_on(f.niri(), &steam, &window))
+            + viewer_geo.loc;
+        f.niri_state().move_cursor(start);
+
+        let start_data = AnyStartData::Pointer(PointerGrabStartData {
+            focus: None,
+            button: input::BTN_LEFT,
+            location: start,
+        });
+        let grab = MoveGrab::new(f.niri_state(), start_data, window, true, None).unwrap();
+        let pointer_handle = f.niri().seat.get_pointer().unwrap();
+        pointer_handle.set_grab(
+            f.niri_state(),
+            grab,
+            SERIAL_COUNTER.next_serial(),
+            Focus::Clear,
+        );
+        for _ in 0..3 {
+            input::pointer_motion(&mut f, (20., 1.));
+        }
+
+        let p = pointer(&mut f);
+        let expected = start + Point::from((60., 3.));
+        assert!(
+            viewer_geo.contains(p)
+                && (p - expected).x.abs() < 1e-6
+                && (p - expected).y.abs() < 1e-6,
+            "pointer {p:?} should have moved to {expected:?} on the viewer {viewer_geo:?}"
+        );
     }
 }

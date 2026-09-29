@@ -3792,6 +3792,22 @@ impl Niri {
             .and_then(|rect| rect.intersection(viewer_geo))
     }
 
+    /// The output a global position physically lies on, ignoring projections, or `fallback`
+    /// if it lies on none.
+    pub fn physical_output_at(&self, pos: Point<f64, Logical>, fallback: &Output) -> Output {
+        match self.physical_output_under(pos) {
+            Some((output, _)) => output.clone(),
+            None => {
+                warn!(
+                    ?pos,
+                    fallback = %fallback.name(),
+                    "position is on no output, using the fallback"
+                );
+                fallback.clone()
+            }
+        }
+    }
+
     /// The output a global position physically lies on, ignoring projections.
     fn physical_output_under(
         &self,

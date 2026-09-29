@@ -23,7 +23,11 @@ use crate::niri::State;
 
 pub struct MoveGrab {
     start_data: AnyStartData<State>,
+    /// The output the gesture drives, which is a projection's source when the grab started
+    /// in a projected region.
     start_output: Output,
+    /// The physical output the grab started on; the cursor wraps and clamps within it.
+    pointer_output: Output,
     start_pos_within_output: Point<f64, Logical>,
     last_location: Point<f64, Logical>,
     window: Window,
@@ -54,11 +58,13 @@ impl MoveGrab {
     ) -> Option<Self> {
         let location = start_data.location();
         let (output, pos_within_output) = state.niri.output_under(location)?;
+        let pointer_output = state.niri.physical_output_at(location, output);
 
         Some(Self {
             last_location: location,
             start_data,
             start_output: output.clone(),
+            pointer_output,
             start_pos_within_output: pos_within_output,
             window,
             gesture: GestureState::Recognizing,
@@ -75,8 +81,8 @@ impl MoveGrab {
         self.gesture == GestureState::Move
     }
 
-    pub fn view_offset_output(&self) -> Option<&Output> {
-        (self.gesture == GestureState::ViewOffset).then_some(&self.start_output)
+    pub fn view_offset_pointer_output(&self) -> Option<&Output> {
+        (self.gesture == GestureState::ViewOffset).then_some(&self.pointer_output)
     }
 
     fn on_ungrab(&mut self, data: &mut State) {

@@ -2,6 +2,7 @@ use fixture::Fixture;
 
 mod client;
 mod fixture;
+mod input;
 mod server;
 mod test_input_backend;
 
