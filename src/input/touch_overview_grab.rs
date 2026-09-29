@@ -164,9 +164,12 @@ impl TouchOverviewGrab {
                 .is_some(),
             GestureState::InteractiveMove => {
                 let window = self.window.as_ref().unwrap();
-                data.niri
+                let ongoing = data
+                    .niri
                     .interactive_move_update_at(window, delta, self.new_location)
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                data.niri.overview_band_drag_motion(self.new_location);
+                ongoing
             }
         };
 

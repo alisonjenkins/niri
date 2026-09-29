@@ -159,8 +159,8 @@ use crate::layout::{
 };
 use crate::niri_render_elements;
 use crate::projection::{
-    band_rect, column_layout, letterbox, scroll_to_show, Band, ColumnSource, Projection,
-    ProjectionKind, ProjectionState, ViewOrigin, Viewing, BAND_FRACTION,
+    band_rect, column_layout, edge_scroll_factor, letterbox, scroll_to_show, Band, BandEdgeScroll,
+    ColumnSource, Projection, ProjectionKind, ProjectionState, ViewOrigin, Viewing, BAND_FRACTION,
 };
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
@@ -407,6 +407,8 @@ pub struct Niri {
     pub gesture_swipe_3f_cumulative: Option<(f64, f64)>,
     /// The physical monitor whose overview band column the ongoing touchpad swipe scrolls.
     pub overview_band_swipe: Option<String>,
+    /// A window dragged over an overview band, scrolling its column at the edges.
+    pub overview_band_edge_scroll: Option<BandEdgeScroll>,
     pub overview_scroll_swipe_gesture: ScrollSwipeGesture,
     pub vertical_wheel_tracker: ScrollTracker,
     pub horizontal_wheel_tracker: ScrollTracker,
@@ -2845,6 +2847,7 @@ impl Niri {
             tablet_cursor_location: None,
             gesture_swipe_3f_cumulative: None,
             overview_band_swipe: None,
+            overview_band_edge_scroll: None,
             overview_scroll_swipe_gesture: ScrollSwipeGesture::new(),
             vertical_wheel_tracker: ScrollTracker::new(120),
             horizontal_wheel_tracker: ScrollTracker::new(120),
@@ -4035,6 +4038,108 @@ impl Niri {
         self.resolve_output_under(pos).is_some_and(|hit| hit.band)
     }
 
+    /// Changes the scroll offset of `viewer`'s band column by `delta`, clamped to its content,
+    /// without rebuilding the tiles. Returns whether it changed.
+    fn move_overview_band_scroll(&mut self, viewer: &str, delta: f64) -> bool {
+        if !delta.is_finite() {
+            debug!(viewer, delta, "ignoring a non-finite overview band scroll");
+            return false;
+        }
+        let Some(band) = self
+            .projection_state
+            .bands
+            .iter_mut()
+            .find(|band| band.viewer == viewer)
+        else {
+            return false;
+        };
+        let max = (band.column.content_h - band.rect.size.h).max(0.);
+        let scroll = (band.column.scroll + delta).clamp(0., max);
+        if scroll == band.column.scroll {
+            return false;
+        }
+        band.column.scroll = scroll;
+        true
+    }
+
+    /// Follows a window dragged with the pointer at global `pos`, for scrolling a band's
+    /// column while the drag is held near its top or bottom edge.
+    pub fn overview_band_drag_motion(&mut self, pos: Point<f64, Logical>) {
+        let under = self
+            .physical_output_under(pos)
+            .and_then(|(output, pos_within_output)| {
+                let name = output.name();
+                self.projection_state
+                    .bands
+                    .iter()
+                    .find(|band| band.viewer == name && band.rect.contains(pos_within_output))
+                    .map(|band| (name, pos_within_output.y - band.rect.loc.y))
+            });
+        let Some((viewer, y)) = under else {
+            self.overview_band_edge_scroll = None;
+            return;
+        };
+        match &mut self.overview_band_edge_scroll {
+            Some(scroll) if scroll.viewer == viewer => scroll.y = y,
+            _ => {
+                self.overview_band_edge_scroll = Some(BandEdgeScroll {
+                    viewer,
+                    y,
+                    last_time: None,
+                    nonzero_start: None,
+                    active: false,
+                });
+            }
+        }
+    }
+
+    /// Advances a band column's edge scroll by the time since the last frame, the way the
+    /// physical monitor's DnD edge workspace switch advances, with the same trigger zone, delay
+    /// and maximum speed (in logical pixels per second for the column).
+    fn advance_overview_band_edge_scroll(&mut self) {
+        if self.layout.interactive_move_pointer().is_none() {
+            self.overview_band_edge_scroll = None;
+        }
+        let Some(scroll) = &mut self.overview_band_edge_scroll else {
+            return;
+        };
+        let Some(band) = self
+            .projection_state
+            .bands
+            .iter()
+            .find(|band| band.viewer == scroll.viewer)
+        else {
+            self.overview_band_edge_scroll = None;
+            return;
+        };
+
+        let config = self.config.borrow().gestures.dnd_edge_workspace_switch;
+        let factor = edge_scroll_factor(scroll.y, band.rect.size.h, config.trigger_height);
+        let now = self.clock.now_unadjusted();
+        let last_time = scroll.last_time.replace(now);
+        if factor == 0. {
+            scroll.nonzero_start = None;
+            scroll.active = false;
+            return;
+        }
+
+        scroll.active = true;
+        let nonzero_start = *scroll.nonzero_start.get_or_insert(now);
+        // Delay starting a bit, to avoid unwanted movement when dragging across the band.
+        if now.saturating_sub(nonzero_start) < Duration::from_millis(u64::from(config.delay_ms)) {
+            return;
+        }
+        let Some(last_time) = last_time else {
+            return;
+        };
+        let delta = factor * now.saturating_sub(last_time).as_secs_f64() * config.max_speed;
+        let viewer = scroll.viewer.clone();
+        let moved = self.move_overview_band_scroll(&viewer, delta);
+        if let Some(scroll) = &mut self.overview_band_edge_scroll {
+            scroll.active = moved;
+        }
+    }
+
     /// Moves the interactive move of `window` by `delta` for the pointer at global `pos`,
     /// targeting what is under it through any projection. An overview band's background is no
     /// target, so a drop there puts the window back. `None` when `pos` is on no output.
@@ -4079,6 +4184,7 @@ impl Niri {
             .map(|p| (p.viewer.clone(), p.source.clone()));
 
         self.layout.interactive_move_end(window);
+        self.overview_band_edge_scroll = None;
 
         let Some((viewer, source)) = tile else {
             return;
@@ -4131,24 +4237,9 @@ impl Niri {
     /// Scrolls the column of `viewer`'s overview band by `delta` logical pixels, positive
     /// downwards, clamped to its content. Returns whether the column moved.
     pub fn scroll_overview_band(&mut self, viewer: &str, delta: f64) -> bool {
-        if !delta.is_finite() {
-            debug!(viewer, delta, "ignoring a non-finite overview band scroll");
+        if !self.move_overview_band_scroll(viewer, delta) {
             return false;
         }
-        let Some(band) = self
-            .projection_state
-            .bands
-            .iter_mut()
-            .find(|band| band.viewer == viewer)
-        else {
-            return false;
-        };
-        let max = (band.column.content_h - band.rect.size.h).max(0.);
-        let scroll = (band.column.scroll + delta).clamp(0., max);
-        if scroll == band.column.scroll {
-            return false;
-        }
-        band.column.scroll = scroll;
 
         self.rebuild_projections();
         let output = self.layout.outputs().find(|o| o.name() == viewer).cloned();
@@ -5405,6 +5496,7 @@ impl Niri {
         self.exit_confirm_dialog.advance_animations();
         self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
+        self.advance_overview_band_edge_scroll();
 
         // Band tiles track the overview zoom and each source's own overview, whose workspaces
         // move and change while the overview is open, so rebuild on every frame then and while
@@ -6246,6 +6338,10 @@ impl Niri {
             state.unfinished_animations_remain |= self.exit_confirm_dialog.are_animations_ongoing();
             state.unfinished_animations_remain |= self.screenshot_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();
+            state.unfinished_animations_remain |= self
+                .overview_band_edge_scroll
+                .as_ref()
+                .is_some_and(|scroll| scroll.active && scroll.viewer == output.name());
             state.unfinished_animations_remain |= state.screen_transition.is_some();
 
             // Also keep redrawing if the current cursor is animated.

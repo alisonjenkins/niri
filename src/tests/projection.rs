@@ -262,6 +262,27 @@ mod band_tests {
     }
 }
 
+mod edge_scroll_factor_tests {
+    use crate::projection::edge_scroll_factor;
+
+    #[test]
+    fn scrolls_up_at_the_top_down_at_the_bottom_and_not_between() {
+        assert_eq!(edge_scroll_factor(0., 1000., 50.), -1.);
+        assert_eq!(edge_scroll_factor(25., 1000., 50.), -0.5);
+        assert_eq!(edge_scroll_factor(500., 1000., 50.), 0.);
+        assert_eq!(edge_scroll_factor(975., 1000., 50.), 0.5);
+        assert_eq!(edge_scroll_factor(2000., 1000., 50.), 1.);
+    }
+
+    #[test]
+    fn bad_inputs_do_not_scroll() {
+        assert_eq!(edge_scroll_factor(f64::NAN, 1000., 50.), 0.);
+        assert_eq!(edge_scroll_factor(10., 0., 50.), 0.);
+        assert_eq!(edge_scroll_factor(10., 1000., 0.), 0.);
+        assert_eq!(edge_scroll_factor(10., 1000., f64::INFINITY), 0.);
+    }
+}
+
 mod column_layout_tests {
     use super::*;
 
@@ -5044,6 +5065,110 @@ mod overview_drag_tests {
         let to = full_band().loc + Point::from((2., 700.));
         let logs = capture_logs(|| drag(&mut f, from, to));
         assert!(!logs.contains(DROP), "{logs}");
+    }
+
+    /// Advances the clock by `frames` frames of 16 ms, advancing animations on each.
+    fn run_frames(f: &mut Fixture, frames: u32) {
+        for _ in 0..frames {
+            let niri = f.niri();
+            let now = niri.clock.now_unadjusted();
+            niri.clock
+                .set_unadjusted(now + std::time::Duration::from_millis(16));
+            niri.advance_animations();
+        }
+    }
+
+    fn column_scroll(f: &mut Fixture, viewer: &Output) -> (f64, f64) {
+        let name = viewer.name();
+        let band = f
+            .niri()
+            .projection_state
+            .bands
+            .iter()
+            .find(|band| band.viewer == name)
+            .unwrap();
+        (
+            band.column.scroll,
+            (band.column.content_h - band.rect.size.h).max(0.),
+        )
+    }
+
+    /// Windows on four workspaces of steam and of aux, so the column is taller than the band,
+    /// and a viewer window being dragged with the pointer at `at`.
+    fn drag_held_at(at: Point<f64, Logical>) -> (Fixture, Output, Output) {
+        let mut f = set_up(&[("aux", 1280, 800), ("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        for name in ["aux", "steam"] {
+            let output = output_named(&mut f, name);
+            super::overview_band_tests::fill_workspaces(&mut f, id, &output);
+        }
+        let v = map_window_on(&mut f, id, &viewer, 400, 300);
+        f.niri().layout.switch_workspace_down();
+        map_window_on(&mut f, id, &viewer, 400, 300);
+        f.niri().layout.switch_workspace(0);
+        f.niri_complete_animations();
+        toggle_overview(&mut f);
+        let from = window_center_on(f.niri(), &viewer, &v);
+        press_and_move(&mut f, from, at);
+        assert!(f.niri().layout.interactive_move_pointer().is_some());
+        (f, viewer, steam)
+    }
+
+    fn band_x() -> f64 {
+        let band = full_band();
+        band.loc.x + band.size.w / 2.
+    }
+
+    #[test]
+    fn holding_a_drag_at_the_bands_edges_scrolls_the_column_to_its_ends() {
+        let (mut f, viewer, _steam) = drag_held_at(Point::from((band_x(), 1430.)));
+        let (start, max) = column_scroll(&mut f, &viewer);
+        assert_eq!(start, 0.);
+        assert!(max > 0.);
+
+        run_frames(&mut f, 10);
+        let early = column_scroll(&mut f, &viewer).0;
+        assert!(early > 0., "no scrolling after the delay");
+        assert!(early < max);
+        run_frames(&mut f, 300);
+        assert_eq!(column_scroll(&mut f, &viewer).0, max);
+
+        // Out of the zone: stays put.
+        move_pointer_to(&mut f, Point::from((band_x(), 700.)));
+        run_frames(&mut f, 1);
+        let still = column_scroll(&mut f, &viewer).0;
+        run_frames(&mut f, 30);
+        assert_eq!(column_scroll(&mut f, &viewer).0, still);
+
+        // Top edge: back up to the start.
+        move_pointer_to(&mut f, Point::from((band_x(), 10.)));
+        run_frames(&mut f, 300);
+        assert_eq!(column_scroll(&mut f, &viewer).0, 0.);
+
+        release(&mut f);
+        assert_eq!(f.niri().overview_band_edge_scroll, None);
+    }
+
+    #[test]
+    fn a_drag_at_the_viewers_own_edge_still_switches_its_workspaces() {
+        // Inside the viewer's own workspace strip, left of the band.
+        let (mut f, viewer, _steam) = drag_held_at(Point::from((2000., 1430.)));
+        let render_idx = |f: &mut Fixture| {
+            f.niri()
+                .layout
+                .monitor_for_output(&viewer)
+                .unwrap()
+                .workspace_render_idx()
+        };
+        let before = render_idx(&mut f);
+
+        run_frames(&mut f, 30);
+
+        assert!(render_idx(&mut f) > before);
+        assert_eq!(column_scroll(&mut f, &viewer).0, 0.);
+        release(&mut f);
     }
 
     #[test]
