@@ -3992,6 +3992,11 @@ impl State {
                                 window,
                             ) {
                                 tool.set_grab(self, grab, time, serial, Focus::Clear);
+                            } else {
+                                debug!(
+                                    ?pos,
+                                    "no output under the tablet tool, dropping its overview down"
+                                );
                             }
                         } else if let Some((window, _)) = under.window {
                             self.niri.layout.activate_window(&window);
@@ -4628,6 +4633,12 @@ impl State {
                     window,
                 ) {
                     handle.set_grab(self, grab, serial);
+                } else {
+                    debug!(
+                        ?pos,
+                        ?slot,
+                        "no output under the touch, dropping its overview down"
+                    );
                 }
             } else if let Some((window, _)) = under.window {
                 self.niri.layout.activate_window(&window);
