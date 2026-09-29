@@ -1762,6 +1762,31 @@ mod render_tests {
             .iter()
             .any(|e| matches!(e, OutputRenderElements::Projected(_))));
     }
+
+    /// The damage tracker keys elements by id, so one frame must not carry an id twice.
+    pub(super) fn assert_unique_ids(elements: &[OutputRenderElements<GlesRenderer>]) {
+        let mut seen = Vec::new();
+        for element in elements {
+            let id = element.id();
+            assert!(
+                !seen.contains(&id),
+                "element id {id:?} appears twice in one frame"
+            );
+            seen.push(id);
+        }
+    }
+
+    #[test]
+    fn overview_frame_has_unique_element_ids_with_a_notification_showing() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        f.niri().config_error_notification.show();
+        f.niri_complete_animations();
+
+        let elements = render(&mut f, &viewer);
+
+        assert_unique_ids(&elements);
+    }
 }
 
 mod view_render_tests {
@@ -1881,6 +1906,17 @@ mod view_render_tests {
         assert!(elements
             .iter()
             .any(|e| matches!(e, OutputRenderElements::Texture(_))));
+    }
+
+    #[test]
+    fn view_mode_frame_has_unique_element_ids_with_a_notification_showing() {
+        let (mut f, viewer) = set_up();
+        f.niri().config_error_notification.show();
+        f.niri_complete_animations();
+
+        let elements = render(&mut f, &viewer);
+
+        super::render_tests::assert_unique_ids(&elements);
     }
 }
 
