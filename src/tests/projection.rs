@@ -1123,11 +1123,14 @@ mod overview_tests {
 
 mod view_tests {
     use niri_ipc::ViewOutputState;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
     use smithay::utils::{Logical, Point};
 
     use super::overview_tests::{map_window_on, output_named, set_up, window_center_on};
     use crate::backend::virtual_output::VirtualOutputError;
     use crate::projection::{ProjectionKind, Viewing};
+    use crate::tests::client::LayerConfigureProps;
     use crate::tests::fixture::Fixture;
 
     fn viewing(f: &mut Fixture) -> Option<Viewing> {
@@ -1293,6 +1296,43 @@ mod view_tests {
         );
         assert_eq!(viewing(&mut f), before);
         assert_eq!(active_output_name(&mut f), "steam");
+    }
+
+    #[test]
+    fn the_viewers_overlay_layer_stays_on_top_of_the_source_for_input() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        map_window_on(&mut f, id, &steam, 1280, 800);
+        f.niri().layout.focus_output(&viewer);
+
+        let layer = f.client(id).create_layer(None, Layer::Overlay, "osd");
+        let surface = layer.surface.clone();
+        layer.set_configure_props(LayerConfigureProps {
+            anchor: Some(Anchor::Left | Anchor::Top),
+            size: Some((200, 200)),
+            ..Default::default()
+        });
+        layer.commit();
+        f.roundtrip(id);
+        let layer = f.client(id).layer(&surface);
+        layer.attach_new_buffer();
+        layer.set_size(200, 200);
+        layer.ack_last_and_commit();
+        f.double_roundtrip(id);
+
+        start(&mut f, "steam");
+
+        // Inside both the letterbox region (x >= 96) and the overlay surface.
+        let contents = f.niri().contents_under(Point::from((150., 100.)));
+        assert!(contents.layer.is_some(), "overlay surface lost the pointer");
+        assert_eq!(contents.output.as_ref(), Some(&viewer));
+
+        // Outside the overlay surface the source is hit as before.
+        let contents = f.niri().contents_under(Point::from((960., 540.)));
+        assert!(contents.layer.is_none());
+        assert_eq!(contents.output.as_ref(), Some(&steam));
     }
 
     #[test]
@@ -1505,5 +1545,125 @@ mod render_tests {
         assert!(!elements
             .iter()
             .any(|e| matches!(e, OutputRenderElements::Projected(_))));
+    }
+}
+
+mod view_render_tests {
+    use smithay::backend::renderer::element::Element as _;
+    use smithay::backend::renderer::gles::GlesRenderer;
+    use smithay::output::Output;
+    use smithay::utils::{Point, Rectangle, Scale, Size};
+
+    use super::overview_tests::map_window_on;
+    use crate::niri::OutputRenderElements;
+    use crate::projection::ProjectionKind;
+    use crate::render_helpers::{RenderCtx, RenderTarget};
+    use crate::tests::fixture::Fixture;
+
+    /// A 5120x1440 viewer with a window of its own, viewing a 1280x800
+    /// `steam` with a window on it.
+    fn set_up() -> (Fixture, Output) {
+        let mut f = Fixture::new();
+        f.niri_state().backend.headless().add_renderer().unwrap();
+        f.add_output(1, (5120, 1440));
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+        let viewer = f.niri_output(1);
+        let steam = f
+            .niri()
+            .layout
+            .outputs()
+            .find(|o| o.name() == "steam")
+            .unwrap()
+            .clone();
+
+        let id = f.add_client();
+        map_window_on(&mut f, id, &steam, 300, 200);
+        map_window_on(&mut f, id, &viewer, 300, 200);
+        f.niri().layout.focus_output(&viewer);
+
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        (f, viewer)
+    }
+
+    fn render(f: &mut Fixture, output: &Output) -> Vec<OutputRenderElements<GlesRenderer>> {
+        f.niri().update_render_elements(None);
+        let state = f.niri_state();
+        let niri = &state.niri;
+        state
+            .backend
+            .headless()
+            .with_primary_renderer(|renderer| {
+                let ctx = RenderCtx {
+                    renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                niri.render_to_vec(ctx, output, false)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn view_mode_draws_the_source_letterboxed_over_a_black_backdrop() {
+        let (mut f, viewer) = set_up();
+        let scale = Scale::from(viewer.current_scale().fractional_scale());
+        let region = f
+            .niri()
+            .projection_state
+            .projections
+            .iter()
+            .find(|p| p.kind == ProjectionKind::View)
+            .unwrap()
+            .region
+            .to_physical_precise_round(scale);
+
+        let elements = render(&mut f, &viewer);
+
+        let projected: Vec<_> = elements
+            .iter()
+            .filter(|e| matches!(e, OutputRenderElements::Projected(_)))
+            .map(|e| e.geometry(scale))
+            .collect();
+        assert!(!projected.is_empty(), "no projected elements");
+        for geo in &projected {
+            assert!(
+                region.contains_rect(*geo),
+                "projected element {geo:?} outside the letterbox {region:?}"
+            );
+        }
+
+        let full = Rectangle::new(Point::from((0, 0)), Size::from((5120, 1440)));
+        let black_backdrop = elements.iter().any(|e| match e {
+            OutputRenderElements::SolidColor(solid) => {
+                solid.geometry(scale) == full && solid.color().components() == [0., 0., 0., 1.]
+            }
+            _ => false,
+        });
+        assert!(black_backdrop, "no black backdrop covering the viewer");
+
+        assert!(
+            !elements.iter().any(|e| matches!(
+                e,
+                OutputRenderElements::Monitor(_) | OutputRenderElements::RelocatedColor(_)
+            )),
+            "the viewer's own workspaces are still drawn"
+        );
+    }
+
+    #[test]
+    fn view_mode_draws_the_viewing_label_on_the_viewer() {
+        let (mut f, viewer) = set_up();
+
+        let elements = render(&mut f, &viewer);
+
+        assert!(elements
+            .iter()
+            .any(|e| matches!(e, OutputRenderElements::Texture(_))));
     }
 }
