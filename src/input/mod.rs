@@ -3065,10 +3065,8 @@ impl State {
                 .then(|| self.niri.workspace_under_cursor(false))
                 .flatten()
             {
-                let ws_idx = self.niri.layout.find_workspace_by_id(ws.id()).unwrap().0;
-
-                self.niri.layout.focus_output(&output);
-                self.niri.layout.toggle_overview_to_workspace(ws_idx);
+                let ws_id = ws.id();
+                self.niri.activate_overview_workspace(&output, ws_id);
 
                 // FIXME: granular.
                 self.niri.queue_redraw_all();

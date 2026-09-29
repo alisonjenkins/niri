@@ -3336,6 +3336,9 @@ impl Niri {
         if !locked && !self.layout.is_overview_open() {
             if let Some(viewing) = &self.projection_state.viewing {
                 if let Some(projection) = self.view_projection(viewing) {
+                    // View mode draws instead of the closing overview's
+                    // columns, so they must not take input either.
+                    projections.retain(|p| p.viewer != projection.viewer);
                     projections.push(projection);
                 }
             }
@@ -3420,6 +3423,38 @@ impl Niri {
         }
 
         ViewOutputState::Stopped { viewer, source }
+    }
+
+    /// Activates a workspace clicked or tapped in the overview, closing it.
+    ///
+    /// A virtual output's workspace also starts view mode on it (FR-004).
+    /// A workspace on the current viewer itself ends view mode, since
+    /// otherwise closing the overview would cover the workspace just picked.
+    pub fn activate_overview_workspace(&mut self, output: &Output, ws_id: WorkspaceId) {
+        let Some((ws_idx, _)) = self.layout.find_workspace_by_id(ws_id) else {
+            debug!(output = %output.name(), ?ws_id, "clicked overview workspace is gone");
+            return;
+        };
+
+        let output_name = output.name();
+        let is_source = is_virtual_output(output);
+        let is_current_viewer = self
+            .projection_state
+            .viewing
+            .as_ref()
+            .is_some_and(|v| v.viewer == output_name);
+        if is_current_viewer {
+            self.stop_viewing();
+        }
+
+        self.layout.focus_output(output);
+        self.layout.toggle_overview_to_workspace(ws_idx);
+
+        if is_source {
+            if let Err(error) = self.start_viewing(&output_name) {
+                warn!(output = %output_name, %error, "cannot view the clicked virtual output");
+            }
+        }
     }
 
     /// Shows why a view-output bind was refused, on the screen it would have
