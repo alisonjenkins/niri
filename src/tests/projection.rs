@@ -4968,6 +4968,84 @@ mod overview_drag_tests {
         }
     }
 
+    /// Log output captured while running `f`, at info level and above.
+    fn capture_logs(f: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Captured {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer({
+                let captured = captured.clone();
+                move || captured.clone()
+            })
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        // With a single dispatcher registered, tracing works out a callsite's interest from the
+        // default dispatcher of whichever thread registers it, so another test's thread could
+        // cache that nothing wants the log. A second one makes it ask every dispatcher.
+        let _second = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        tracing::subscriber::with_default(subscriber, || {
+            // Callsites cached as unwanted before this subscriber existed.
+            tracing::callsite::rebuild_interest_cache();
+            f()
+        });
+        let bytes = captured.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn each_drop_onto_a_tile_is_logged() {
+        const DROP: &str = "dropped a window onto an overview band tile";
+        let (mut f, viewer, steam, v, s) = drag_set_up(&[("steam", 1280, 800)]);
+
+        let from = window_center_on(f.niri(), &viewer, &v);
+        let to = in_tile(&mut f, &steam, &s);
+        drag(&mut f, from, to);
+
+        let from = in_tile(&mut f, &steam, &v);
+        let to = tile_point(&mut f, "steam", 1);
+        let logs = capture_logs(|| drag(&mut f, from, to));
+        let lines: Vec<&str> = logs.lines().filter(|line| line.contains(DROP)).collect();
+        assert_eq!(
+            windows_by_workspace(f.niri(), &steam)[1],
+            std::slice::from_ref(&v)
+        );
+        assert_eq!(lines.len(), 1, "{logs}");
+        let v_id = f
+            .niri()
+            .layout
+            .windows()
+            .find(|(_, m)| m.window == v)
+            .map(|(_, m)| m.id().get())
+            .unwrap();
+        assert!(lines[0].contains(&format!("window={v_id}")), "{}", lines[0]);
+        assert!(lines[0].contains("output=steam"), "{}", lines[0]);
+        assert!(lines[0].contains("workspace_idx=1"), "{}", lines[0]);
+
+        // Nothing for a drop onto the viewer or the band's background.
+        let from = in_tile(&mut f, &steam, &v);
+        let to = viewer_workspace_centre(&mut f, &viewer);
+        let logs = capture_logs(|| drag(&mut f, from, to));
+        assert!(!logs.contains(DROP), "{logs}");
+        let from = in_tile(&mut f, &steam, &s);
+        let to = full_band().loc + Point::from((2., 700.));
+        let logs = capture_logs(|| drag(&mut f, from, to));
+        assert!(!logs.contains(DROP), "{logs}");
+    }
+
     #[test]
     fn turning_the_source_off_mid_drag_keeps_the_drag_and_the_window() {
         let (mut f, viewer, steam, v, s) = drag_set_up(&[("steam", 1280, 800)]);
