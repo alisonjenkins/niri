@@ -11,6 +11,7 @@ mod floating;
 mod fullscreen;
 mod layer_shell;
 mod projection;
+mod projection_stream;
 mod remove_output;
 mod transactions;
 mod virtual_pointer;
