@@ -1738,7 +1738,7 @@ mod render_tests {
     }
 
     #[test]
-    fn overview_renders_each_source_inside_its_region() {
+    fn egl_overview_renders_each_source_inside_its_region() {
         let mut f = set_up(&[("steam", 1280, 800), ("aux", 1920, 1080)]);
         let viewer = f.niri_output(1);
         let scale = Scale::from(viewer.current_scale().fractional_scale());
@@ -1770,7 +1770,7 @@ mod render_tests {
     }
 
     #[test]
-    fn overview_labels_each_column_with_its_source_name() {
+    fn egl_overview_labels_each_column_with_its_source_name() {
         let mut f = set_up(&[("steam", 1280, 800), ("aux", 1920, 1080)]);
         let viewer = f.niri_output(1);
         let scale = Scale::from(viewer.current_scale().fractional_scale());
@@ -1798,7 +1798,7 @@ mod render_tests {
     }
 
     #[test]
-    fn rendering_a_source_never_includes_projections() {
+    fn egl_rendering_a_source_never_includes_projections() {
         let mut f = set_up(&[("steam", 1280, 800)]);
         let steam = f
             .niri()
@@ -1847,7 +1847,7 @@ mod render_tests {
     /// `update_render_elements(Some(output))`), so the viewer's redraw must bring the sources
     /// it projects up to date too, or their columns show stale contents.
     #[test]
-    fn a_viewer_redraw_refreshes_the_sources_it_projects() {
+    fn egl_a_viewer_redraw_refreshes_the_sources_it_projects() {
         let mut f = set_up(&[("steam", 1280, 800)]);
         let viewer = f.niri_output(1);
 
@@ -1871,7 +1871,7 @@ mod render_tests {
     }
 
     #[test]
-    fn overview_frame_has_unique_element_ids_with_a_notification_showing() {
+    fn egl_overview_frame_has_unique_element_ids_with_a_notification_showing() {
         let mut f = set_up(&[("steam", 1280, 800)]);
         let viewer = f.niri_output(1);
         f.niri().config_error_notification.show();
@@ -1948,7 +1948,7 @@ mod view_render_tests {
     }
 
     #[test]
-    fn view_mode_draws_the_source_letterboxed_over_a_black_backdrop() {
+    fn egl_view_mode_draws_the_source_letterboxed_over_a_black_backdrop() {
         let (mut f, viewer) = set_up();
         let scale = Scale::from(viewer.current_scale().fractional_scale());
         let region = f
@@ -1995,7 +1995,7 @@ mod view_render_tests {
     }
 
     #[test]
-    fn view_mode_draws_the_viewing_label_on_the_viewer() {
+    fn egl_view_mode_draws_the_viewing_label_on_the_viewer() {
         let (mut f, viewer) = set_up();
 
         let elements = render(&mut f, &viewer);
@@ -2006,7 +2006,7 @@ mod view_render_tests {
     }
 
     #[test]
-    fn view_mode_frame_has_unique_element_ids_with_a_notification_showing() {
+    fn egl_view_mode_frame_has_unique_element_ids_with_a_notification_showing() {
         let (mut f, viewer) = set_up();
         f.niri().config_error_notification.show();
         f.niri_complete_animations();

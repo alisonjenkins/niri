@@ -115,7 +115,7 @@ fn render_has_pointer(f: &mut Fixture, output: &Output) -> bool {
 // since (unlike the overview) it never touches the source's own monitor
 // state, so leak-free implies those two must match exactly.
 #[test]
-fn source_render_is_unaffected_by_overview_and_view_projections() {
+fn egl_source_render_is_unaffected_by_overview_and_view_projections() {
     let mut f = set_up_with_source();
     let steam = output_named(&mut f, "steam");
     map_window_on(&mut f, &steam, 300, 200);
@@ -187,7 +187,7 @@ fn source_render_is_unaffected_by_overview_and_view_projections() {
 // projection's region, must not show up when the SOURCE is rendered
 // (only the viewer, which the cursor is actually on, draws it).
 #[test]
-fn pointer_on_the_viewer_inside_a_view_projection_is_not_drawn_on_the_source() {
+fn egl_pointer_on_the_viewer_inside_a_view_projection_is_not_drawn_on_the_source() {
     let mut f = set_up_with_source();
     let steam = output_named(&mut f, "steam");
     let viewer = f.niri_output(1);
@@ -244,7 +244,7 @@ fn pointer_on_the_viewer_inside_a_view_projection_is_not_drawn_on_the_source() {
 // the stream must show that cursor: the pointer is drawn on a virtual output
 // whenever it is physically over it.
 #[test]
-fn pointer_physically_on_the_virtual_output_is_drawn_on_it() {
+fn egl_pointer_physically_on_the_virtual_output_is_drawn_on_it() {
     let mut f = set_up_with_source();
     let steam = output_named(&mut f, "steam");
 
@@ -296,7 +296,7 @@ fn redraw_state_kind(state: &RedrawState) -> &'static str {
 }
 
 #[test]
-fn rendering_the_viewer_does_not_touch_the_source_redraw_state() {
+fn egl_rendering_the_viewer_does_not_touch_the_source_redraw_state() {
     let mut f = set_up_with_source();
     let steam = output_named(&mut f, "steam");
     let viewer = f.niri_output(1);
