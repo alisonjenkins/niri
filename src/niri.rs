@@ -2191,9 +2191,11 @@ impl State {
             return;
         }
 
-        let default_output = self
-            .niri
-            .output_under_cursor()
+        // The screenshot UI is drawn on the physical output, never inside a projection.
+        let pointer_pos = self.niri.seat.get_pointer().map(|p| p.current_location());
+        let default_output = pointer_pos
+            .and_then(|pos| self.niri.physical_output_under(pos))
+            .map(|(output, _)| output.clone())
             .or_else(|| self.niri.layout.active_output().cloned());
         let Some(default_output) = default_output else {
             return;

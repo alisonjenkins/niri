@@ -2893,6 +2893,29 @@ mod screenshot_tests {
     }
 
     #[test]
+    fn egl_opening_the_screenshot_ui_in_view_mode_selects_on_the_viewer() {
+        // Over the source's picture and over a letterbox bar.
+        for x in [960., 10.] {
+            let (mut f, viewer) = set_up((1920, 1080));
+            f.niri().start_viewing("steam").unwrap();
+            f.niri_complete_animations();
+            let loc = viewer_loc(&mut f, &viewer);
+            f.niri_state().move_cursor(loc + Point::from((x, 540.)));
+
+            open_screenshot_ui(&mut f);
+
+            assert_eq!(
+                selection(&mut f),
+                (
+                    viewer.name(),
+                    Rectangle::new((480, 270).into(), (960, 540).into())
+                ),
+                "opening with the pointer at x={x} on the viewer should default to the viewer"
+            );
+        }
+    }
+
+    #[test]
     fn egl_dragging_in_the_screenshot_ui_without_projections_selects_under_the_pointer() {
         let (mut f, viewer) = set_up((1920, 1080));
         assert!(f.niri().projection_state.projections.is_empty());
