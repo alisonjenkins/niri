@@ -4,11 +4,12 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use smithay::backend::input::{
-    ButtonState, Device, DeviceCapability, Event, InputBackend, InputEvent, InputTime,
-    PointerButtonEvent, PointerMotionEvent, UnusedEvent,
+    ButtonState, Device, DeviceCapability, Event, InputBackend, InputEvent, InputTime, KeyState,
+    Keycode, PointerButtonEvent, PointerMotionEvent, UnusedEvent,
 };
+use smithay::input::keyboard::FilterResult;
 use smithay::output::Output;
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use super::fixture::Fixture;
 use crate::input::backend_ext::NiriInputDevice;
@@ -16,6 +17,7 @@ use crate::niri::State;
 
 pub const BTN_LEFT: u32 = 0x110;
 pub const BTN_RIGHT: u32 = 0x111;
+pub const BTN_MIDDLE: u32 = 0x112;
 
 #[derive(Debug)]
 pub struct TestInput;
@@ -154,6 +156,28 @@ pub fn pointer_motion(f: &mut Fixture, delta: impl Into<Point<f64, Logical>>) {
         ..event()
     };
     send(f, InputEvent::PointerMotion { event });
+}
+
+/// Presses or releases the Super key, the headless backend's default mod key.
+pub fn super_key(f: &mut Fixture, pressed: bool) {
+    const KEY_LEFTMETA: u32 = 125;
+    // xkb keycodes are evdev codes plus 8.
+    let keycode = Keycode::new(KEY_LEFTMETA + 8);
+    let state = if pressed {
+        KeyState::Pressed
+    } else {
+        KeyState::Released
+    };
+    let time = InputTime::from_micros(next_time_usec());
+    let keyboard = f.niri().seat.get_keyboard().unwrap();
+    keyboard.input::<(), _>(
+        f.niri_state(),
+        keycode,
+        state,
+        SERIAL_COUNTER.next_serial(),
+        time,
+        |_, _, _| FilterResult::Forward,
+    );
 }
 
 pub fn pointer_button(f: &mut Fixture, button: u32, pressed: bool) {

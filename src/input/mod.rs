@@ -2900,8 +2900,15 @@ impl State {
                         .layout
                         .view_offset_gesture_begin(&output, Some(ws_idx), false);
                     let pointer_output = self.niri.physical_output_at(location, &output);
-                    let grab =
-                        SpatialMovementGrab::new(start_data, output, pointer_output, ws_id, true);
+                    let input_scale = self.niri.projection_scale_at(location);
+                    let grab = SpatialMovementGrab::new(
+                        start_data,
+                        output,
+                        pointer_output,
+                        input_scale,
+                        ws_id,
+                        true,
+                    );
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri
                         .cursor_manager
@@ -2937,8 +2944,15 @@ impl State {
                         location,
                     };
                     let pointer_output = self.niri.physical_output_at(location, &output);
-                    let grab =
-                        SpatialMovementGrab::new(start_data, output, pointer_output, ws_id, false);
+                    let input_scale = self.niri.projection_scale_at(location);
+                    let grab = SpatialMovementGrab::new(
+                        start_data,
+                        output,
+                        pointer_output,
+                        input_scale,
+                        ws_id,
+                        false,
+                    );
                     pointer.set_grab(self, grab, serial, Focus::Clear);
                     self.niri
                         .cursor_manager
@@ -3050,7 +3064,7 @@ impl State {
                                 location,
                             };
                             let start_data = AnyStartData::Pointer(start_data);
-                            let grab = ResizeGrab::new(start_data, window.clone());
+                            let grab = ResizeGrab::new(self, start_data, window.clone());
                             pointer.set_grab(self, grab, serial, Focus::Clear);
                             self.niri
                                 .cursor_manager
@@ -3791,6 +3805,7 @@ impl State {
                                 start_timestamp,
                                 output,
                                 pos_within_output,
+                                self.niri.projection_scale_at(pos),
                                 ws_id,
                                 matched_narrow,
                                 window,
@@ -4408,6 +4423,7 @@ impl State {
                     start_timestamp,
                     output,
                     pos_within_output,
+                    self.niri.projection_scale_at(pos),
                     ws_id,
                     matched_narrow,
                     window,

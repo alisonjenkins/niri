@@ -1888,6 +1888,7 @@ mod view_render_tests {
 mod input_tests {
     use niri_config::input::{WarpMouseToFocus, WarpMouseToFocusMode};
     use niri_config::{Action, Config};
+    use smithay::desktop::Window;
     use smithay::input::pointer::{Focus, GrabStartData as PointerGrabStartData};
     use smithay::output::Output;
     use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
@@ -2033,6 +2034,95 @@ mod input_tests {
             "pointer {p:?} should have moved to {expected:?} on the viewer {viewer_geo:?}"
         );
         input::pointer_button(&mut f, input::BTN_RIGHT, false);
+    }
+
+    fn pending_width(window: &Window) -> i32 {
+        window
+            .toplevel()
+            .unwrap()
+            .with_pending_state(|state| state.size)
+            .unwrap()
+            .w
+    }
+
+    #[test]
+    fn mod_right_drag_resize_in_view_mode_follows_the_pointer_at_projection_scale() {
+        let mut f = set_up_with(Config::default(), (1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let window = map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        let projection = view_projection(&mut f);
+        assert!((projection.scale() - 1.35).abs() < 1e-9, "{projection:?}");
+
+        let width_before = window.geometry().size.w;
+        // Inside the right third of the window, so the drag moves its right edge.
+        let grip = window_center_on(f.niri(), &steam, &window)
+            + Point::from((f64::from(width_before) * 0.4, 0.));
+        let viewer_geo = geometry(&mut f, &viewer);
+        f.niri_state()
+            .move_cursor(projection.to_viewer(grip) + viewer_geo.loc);
+
+        input::super_key(&mut f, true);
+        input::pointer_button(&mut f, input::BTN_RIGHT, true);
+        // 135 viewer pixels are 100 source pixels at scale 1.35.
+        for _ in 0..3 {
+            input::pointer_motion(&mut f, (45., 0.));
+        }
+        input::pointer_button(&mut f, input::BTN_RIGHT, false);
+        input::super_key(&mut f, false);
+        f.double_roundtrip(id);
+
+        let grown = pending_width(&window) - width_before;
+        assert!(
+            (grown - 100).abs() <= 1,
+            "a 135 px drag at scale 1.35 grew the window by {grown} px, expected 100"
+        );
+    }
+
+    fn steam_view_pos(f: &mut Fixture, steam: &Output) -> f64 {
+        f.niri()
+            .layout
+            .monitor_for_output(steam)
+            .unwrap()
+            .active_workspace_ref()
+            .scrolling()
+            .view_pos()
+    }
+
+    #[test]
+    fn mod_middle_drag_in_view_mode_scrolls_the_source_at_projection_scale() {
+        let mut f = set_up_with(Config::default(), (1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        for _ in 0..3 {
+            map_window_on(&mut f, id, &steam, 1000, 300);
+        }
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        let projection = view_projection(&mut f);
+        let viewer_geo = geometry(&mut f, &viewer);
+        f.niri_state()
+            .move_cursor(center(projection.region) + viewer_geo.loc);
+        let view_pos_before = steam_view_pos(&mut f, &steam);
+
+        input::super_key(&mut f, true);
+        input::pointer_button(&mut f, input::BTN_MIDDLE, true);
+        // 135 viewer pixels are 100 source pixels at scale 1.35.
+        for _ in 0..3 {
+            input::pointer_motion(&mut f, (45., 0.));
+        }
+        let scrolled = steam_view_pos(&mut f, &steam) - view_pos_before;
+        input::pointer_button(&mut f, input::BTN_MIDDLE, false);
+        input::super_key(&mut f, false);
+
+        assert!(
+            (scrolled + 100.).abs() < 1e-6,
+            "a 135 px drag at scale 1.35 scrolled steam by {scrolled} px, expected -100"
+        );
     }
 
     /// A client's titlebar drag (xdg_toplevel.move) starts a `MoveGrab` with view offset

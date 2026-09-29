@@ -22,6 +22,8 @@ pub struct SpatialMovementGrab {
     output: Output,
     /// The physical output the grab started on; the cursor wraps and clamps within it.
     pointer_output: Output,
+    /// The projection scale where the grab started; cursor deltas divide by it.
+    input_scale: f64,
     workspace_id: WorkspaceId,
     gesture: GestureState,
 
@@ -43,6 +45,7 @@ impl SpatialMovementGrab {
         start_data: PointerGrabStartData<State>,
         output: Output,
         pointer_output: Output,
+        input_scale: f64,
         workspace_id: WorkspaceId,
         is_view_offset: bool,
     ) -> Self {
@@ -58,6 +61,7 @@ impl SpatialMovementGrab {
             start_data,
             output,
             pointer_output,
+            input_scale,
             workspace_id,
             gesture,
             new_location: location,
@@ -82,13 +86,15 @@ impl SpatialMovementGrab {
         let delta = self
             .relative_delta
             .take()
-            .unwrap_or(self.new_location - self.last_location);
+            .unwrap_or(self.new_location - self.last_location)
+            .downscale(self.input_scale);
         self.last_location = self.new_location;
 
         let layout = &mut data.niri.layout;
         let res = match self.gesture {
             GestureState::Recognizing => {
                 let c = self.new_location - self.start_data.location;
+                let moved = c.downscale(self.input_scale);
 
                 // Check if the gesture moved far enough to decide. Threshold copied from GTK 4.
                 if c.x * c.x + c.y * c.y >= 8. * 8. {
@@ -97,7 +103,7 @@ impl SpatialMovementGrab {
                         if let Some((ws_idx, ws)) = layout.find_workspace_by_id(self.workspace_id) {
                             if ws.current_output() == Some(&self.output) {
                                 layout.view_offset_gesture_begin(&self.output, Some(ws_idx), false);
-                                layout.view_offset_gesture_update(-c.x, timestamp, false)
+                                layout.view_offset_gesture_update(-moved.x, timestamp, false)
                             } else {
                                 None
                             }
@@ -107,7 +113,7 @@ impl SpatialMovementGrab {
                     } else {
                         self.gesture = GestureState::WorkspaceSwitch;
                         layout.workspace_switch_gesture_begin(&self.output, false);
-                        layout.workspace_switch_gesture_update(-c.y, timestamp, false)
+                        layout.workspace_switch_gesture_update(-moved.y, timestamp, false)
                     }
                 } else {
                     Some(None)

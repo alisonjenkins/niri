@@ -23,16 +23,21 @@ pub struct ResizeGrab {
 
     // Accumulated and applied in frame().
     new_location: Point<f64, Logical>,
+
+    /// The projection scale where the grab started; cursor deltas divide by it.
+    input_scale: f64,
 }
 
 impl ResizeGrab {
-    pub fn new(start_data: AnyStartData<State>, window: Window) -> Self {
+    pub fn new(state: &State, start_data: AnyStartData<State>, window: Window) -> Self {
         let location = start_data.location();
+        let input_scale = state.niri.projection_scale_at(location);
 
         Self {
             start_data,
             window,
             new_location: location,
+            input_scale,
         }
     }
 
@@ -52,7 +57,7 @@ impl ResizeGrab {
             return false;
         }
 
-        let delta = self.new_location - self.start_data.location();
+        let delta = (self.new_location - self.start_data.location()).downscale(self.input_scale);
         data.niri
             .layout
             .interactive_resize_update(&self.window, delta)

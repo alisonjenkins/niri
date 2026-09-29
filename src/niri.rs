@@ -601,9 +601,9 @@ pub struct PointContents {
 struct OutputUnder<'a> {
     output: &'a Output,
     pos_within_output: Point<f64, Logical>,
-    /// The position lies in a projection's region on a viewer, so `output`
+    /// The projection whose region on a viewer the position lies in, so `output`
     /// is the projection's source and not where the pointer really is.
-    projected: bool,
+    projection: Option<&'a Projection>,
 }
 
 #[derive(Debug, Default)]
@@ -3665,7 +3665,7 @@ impl Niri {
         let unprojected = OutputUnder {
             output,
             pos_within_output,
-            projected: false,
+            projection: None,
         };
 
         let viewer_name = output.name();
@@ -3700,7 +3700,7 @@ impl Niri {
                 return Some(OutputUnder {
                     output: source,
                     pos_within_output: source_pos,
-                    projected: true,
+                    projection: Some(projection),
                 });
             }
 
@@ -3714,6 +3714,17 @@ impl Niri {
         }
 
         Some(unprojected)
+    }
+
+    /// How many viewer pixels one pixel of the output under `pos` covers: the projection's
+    /// scale when `pos` lies in a projection's region, else 1.
+    ///
+    /// Grabs divide real-cursor deltas by this so a drag moves the source's contents as far
+    /// as it moves the cursor.
+    pub fn projection_scale_at(&self, pos: Point<f64, Logical>) -> f64 {
+        self.resolve_output_under(pos)
+            .and_then(|hit| hit.projection)
+            .map_or(1., Projection::scale)
     }
 
     /// Whether a mapped overlay-layer surface on `output` is under the
@@ -3827,7 +3838,7 @@ impl Niri {
     /// position is checked against the viewer's real geometry, never the
     /// source's.
     fn is_hit_in_hot_corner(&self, hit: &OutputUnder, pos: Point<f64, Logical>) -> bool {
-        if hit.projected {
+        if hit.projection.is_some() {
             self.is_inside_physical_hot_corner(pos)
         } else {
             self.is_inside_hot_corner(hit.output, hit.pos_within_output)
@@ -4085,8 +4096,9 @@ impl Niri {
         let OutputUnder {
             output,
             pos_within_output,
-            projected,
+            projection,
         } = hit;
+        let projected = projection.is_some();
         rv.output = Some(output.clone());
         let Some(output_geo) = self.global_space.output_geometry(output) else {
             debug!(output = %output.name(), "output has no geometry in global_space");

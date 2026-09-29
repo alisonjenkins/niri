@@ -28,6 +28,8 @@ pub struct MoveGrab {
     start_output: Output,
     /// The physical output the grab started on; the cursor wraps and clamps within it.
     pointer_output: Output,
+    /// The projection scale where the grab started; cursor deltas divide by it.
+    input_scale: f64,
     start_pos_within_output: Point<f64, Logical>,
     last_location: Point<f64, Logical>,
     window: Window,
@@ -59,12 +61,14 @@ impl MoveGrab {
         let location = start_data.location();
         let (output, pos_within_output) = state.niri.output_under(location)?;
         let pointer_output = state.niri.physical_output_at(location, output);
+        let input_scale = state.niri.projection_scale_at(location);
 
         Some(Self {
             last_location: location,
             start_data,
             start_output: output.clone(),
             pointer_output,
+            input_scale,
             start_pos_within_output: pos_within_output,
             window,
             gesture: GestureState::Recognizing,
@@ -179,8 +183,11 @@ impl MoveGrab {
             return true;
         };
 
-        let mut delta = self.new_location - self.last_location;
-        let mut relative_delta = self.relative_delta.take().unwrap_or(delta);
+        let mut delta = (self.new_location - self.last_location).downscale(self.input_scale);
+        let mut relative_delta = self
+            .relative_delta
+            .take()
+            .map_or(delta, |d| d.downscale(self.input_scale));
         self.last_location = self.new_location;
 
         // Try to recognize the gesture.
@@ -217,8 +224,8 @@ impl MoveGrab {
                 }
 
                 // Apply the whole delta that accumulated during recognizing.
-                delta = c;
-                relative_delta = c;
+                delta = c.downscale(self.input_scale);
+                relative_delta = delta;
             }
         }
 
@@ -283,7 +290,7 @@ impl MoveGrab {
             // Apply the delta accumulated during recognizing.
             let ongoing = data.niri.layout.interactive_move_update(
                 &self.window,
-                self.last_location - self.start_data.location(),
+                (self.last_location - self.start_data.location()).downscale(self.input_scale),
                 output,
                 pos_within_output,
             );

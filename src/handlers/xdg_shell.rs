@@ -290,16 +290,16 @@ impl XdgShellHandler for State {
 
         match start_data {
             AnyStartData::Pointer(_) => {
-                let grab = ResizeGrab::new(start_data, window);
+                let grab = ResizeGrab::new(self, start_data, window);
                 pointer.set_grab(self, grab, serial, Focus::Clear);
             }
             AnyStartData::Touch(_) => {
                 let touch = self.niri.seat.get_touch().unwrap();
-                let grab = ResizeGrab::new(start_data, window);
+                let grab = ResizeGrab::new(self, start_data, window);
                 touch.set_grab(self, grab, serial);
             }
             AnyStartData::TabletTool(_) => {
-                let grab = ResizeGrab::new(start_data, window);
+                let grab = ResizeGrab::new(self, start_data, window);
                 let time = InputTime::now();
                 tablet_tool
                     .unwrap()
