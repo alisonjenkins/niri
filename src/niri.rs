@@ -925,6 +925,7 @@ impl State {
         self.niri.popups.cleanup();
         self.refresh_popup_grab();
         self.niri.stop_viewing_if_viewer_active();
+        self.ipc_refresh_view_output();
         self.update_keyboard_focus();
 
         // Should be called before refresh_layout() because that one will refresh other window
