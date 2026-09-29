@@ -3263,9 +3263,18 @@ impl Niri {
             }
         }
 
-        let mut projections = self.overview_projections();
+        // A projection would let the lock screen's pointer and pixels reach
+        // another output, so none exist from the lock request until unlock.
+        // `viewing` is kept so the view comes back after unlocking.
+        let locked = !matches!(self.lock_state, LockState::Unlocked);
 
-        if !self.layout.is_overview_open() {
+        let mut projections = if locked {
+            Vec::new()
+        } else {
+            self.overview_projections()
+        };
+
+        if !locked && !self.layout.is_overview_open() {
             if let Some(viewing) = &self.projection_state.viewing {
                 if let Some(projection) = self.view_projection(viewing) {
                     projections.push(projection);
@@ -6915,6 +6924,8 @@ impl Niri {
                 deadline_token,
             };
         }
+
+        self.rebuild_projections();
     }
 
     pub fn maybe_continue_to_locking(&mut self) {
@@ -6982,6 +6993,7 @@ impl Niri {
         for output_state in self.output_state.values_mut() {
             output_state.lock_surface = None;
         }
+        self.rebuild_projections();
         self.queue_redraw_all();
     }
 
