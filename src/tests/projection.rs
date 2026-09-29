@@ -1671,15 +1671,18 @@ mod view_tests {
 }
 
 mod render_tests {
+    use niri_config::Action;
     use smithay::backend::renderer::element::Element as _;
     use smithay::backend::renderer::gles::GlesRenderer;
     use smithay::output::Output;
-    use smithay::utils::{Logical, Physical, Rectangle, Scale};
+    use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 
+    use super::overview_tests::map_window_on;
     use crate::niri::OutputRenderElements;
     use crate::projection::{Projection, ProjectionKind};
     use crate::render_helpers::{RenderCtx, RenderTarget};
     use crate::tests::fixture::Fixture;
+    use crate::tests::input;
 
     fn set_up(sources: &[(&str, u16, u16)]) -> Fixture {
         let mut f = Fixture::new();
@@ -1898,6 +1901,79 @@ mod render_tests {
         let elements = render(&mut f, &viewer);
 
         assert_unique_ids(&elements);
+    }
+
+    /// A viewer point inside steam's column where one of the viewer's own windows, scrolled
+    /// off its workspace to the right, is also laid out.
+    fn overflow_point(f: &mut Fixture, viewer: &Output) -> Point<f64, Logical> {
+        let region = overview_projections(f)
+            .into_iter()
+            .find(|p| p.source == "steam")
+            .unwrap()
+            .region;
+        let niri = f.niri();
+        (0..20)
+            .flat_map(|i| (0..20).map(move |j| (i, j)))
+            .map(|(i, j)| {
+                region.loc
+                    + Point::from((
+                        region.size.w * (f64::from(i) + 0.5) / 20.,
+                        region.size.h * (f64::from(j) + 0.5) / 20.,
+                    ))
+            })
+            .find(|p| niri.layout.window_under(viewer, *p).is_some())
+            .unwrap_or_else(|| panic!("no viewer window overflows into the column {region:?}"))
+    }
+
+    #[test]
+    fn egl_a_viewer_window_overflowing_into_a_column_is_drawn_under_it() {
+        let mut f = Fixture::new();
+        f.niri_state().backend.headless().add_renderer().unwrap();
+        f.add_output(1, (5120, 1440));
+        let viewer = f.niri_output(1);
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+        let id = f.add_client();
+        for _ in 0..6 {
+            map_window_on(&mut f, id, &viewer, 1600, 600);
+        }
+        f.niri_state().do_action(Action::FocusColumnFirst, false);
+        f.niri().layout.toggle_overview();
+        f.niri_complete_animations();
+        f.niri_state().refresh_and_flush_clients();
+        let point = overflow_point(&mut f, &viewer);
+
+        // Elements are front to back, so the first one covering the point is what is seen.
+        let scale = Scale::from(viewer.current_scale().fractional_scale());
+        let pixel = Rectangle::new(point.to_physical_precise_round(scale), Size::from((1, 1)));
+        let elements = render(&mut f, &viewer);
+        let top = elements
+            .iter()
+            .find(|e| e.geometry(scale).contains_rect(pixel))
+            .unwrap();
+        assert!(
+            !matches!(top, OutputRenderElements::Monitor(_)),
+            "the viewer's own window is drawn over steam's column at {point:?}"
+        );
+
+        // The click lands where the picture says: steam's column.
+        let target = point - f.niri().seat.get_pointer().unwrap().current_location();
+        input::pointer_motion(&mut f, target);
+        assert_eq!(
+            f.niri().pointer_contents.output.as_ref().map(|o| o.name()),
+            Some("steam".to_string())
+        );
+        input::pointer_button(&mut f, input::BTN_LEFT, true);
+        input::pointer_button(&mut f, input::BTN_LEFT, false);
+        f.niri_complete_animations();
+        assert_eq!(
+            f.niri().layout.active_output().map(|o| o.name()),
+            Some("steam".to_string())
+        );
     }
 }
 

@@ -466,6 +466,10 @@ pub struct Niri {
     /// Source-name labels drawn above overview projection columns.
     overview_column_labels: OverviewColumnLabels,
 
+    /// Opaque fill under each overview column, keyed by (viewer, source), so the viewer's
+    /// own windows scrolled off their workspace do not show through a translucent backdrop.
+    overview_column_backings: HashMap<(String, String), SolidColorBuffer>,
+
     /// "Viewing: <name>" and view-mode notices, drawn on the viewer.
     pub view_output_label: ViewOutputLabel,
 }
@@ -2889,6 +2893,7 @@ impl Niri {
             projection_state: ProjectionState::default(),
             projection_rebuild_overview_zoom: 1.,
             overview_column_labels: OverviewColumnLabels::default(),
+            overview_column_backings: HashMap::new(),
             view_output_label,
         };
 
@@ -3384,6 +3389,22 @@ impl Niri {
             let projections = &self.projection_state.projections;
             self.overview_column_labels
                 .retain_sources(|name| projections.iter().any(|p| p.source == name));
+
+            let overview: Vec<_> = projections
+                .iter()
+                .filter(|p| p.kind == ProjectionKind::Overview)
+                .collect();
+            self.overview_column_backings.retain(|(viewer, source), _| {
+                overview
+                    .iter()
+                    .any(|p| &p.viewer == viewer && &p.source == source)
+            });
+            for p in overview {
+                self.overview_column_backings
+                    .entry((p.viewer.clone(), p.source.clone()))
+                    .or_insert_with(|| SolidColorBuffer::new(p.region.size, VIEW_BACKDROP_COLOR))
+                    .resize(p.region.size);
+            }
         }
 
         self.projection_rebuild_overview_zoom = self.layout.overview_zoom();
@@ -5525,9 +5546,12 @@ impl Niri {
                 push_popups_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
             }
 
-            mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
-
+            // Columns go above the viewer's workspaces: input resolves projections first, and
+            // the viewer's windows scrolled off their workspace would otherwise be drawn over a
+            // column that takes their clicks.
             self.render_overview_projections(ctx.r(), output, push);
+
+            mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
             for (ws, geo) in mon.workspaces_with_render_geo() {
                 // The render element namespace. This will be set to the workspace index for
@@ -5597,6 +5621,26 @@ impl Niri {
             }
 
             self.render_projected_source(ctx.r(), projection, source, viewer_scale, push);
+
+            match self
+                .overview_column_backings
+                .get(&(projection.viewer.clone(), projection.source.clone()))
+            {
+                Some(backing) => push(
+                    SolidColorRenderElement::from_buffer(
+                        backing,
+                        projection.region.loc,
+                        1.,
+                        Kind::Unspecified,
+                    )
+                    .into(),
+                ),
+                None => debug!(
+                    viewer = %projection.viewer,
+                    source = %projection.source,
+                    "overview column has no backing yet"
+                ),
+            }
         }
     }
 
