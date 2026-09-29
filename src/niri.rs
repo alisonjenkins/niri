@@ -159,7 +159,7 @@ use crate::layout::{
 };
 use crate::niri_render_elements;
 use crate::projection::{
-    letterbox, overview_columns, Projection, ProjectionKind, ProjectionState, Viewing,
+    letterbox, overview_columns, Projection, ProjectionKind, ProjectionState, ViewOrigin, Viewing,
 };
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
@@ -3396,7 +3396,7 @@ impl Niri {
     /// Otherwise the viewer is the active monitor if it is physical, else
     /// the physical output under the pointer, else the first physical one.
     pub fn start_viewing(&mut self, name: &str) -> Result<ViewOutputState, VirtualOutputError> {
-        self.start_viewing_on(name, None)
+        self.start_viewing_on(name, None, ViewOrigin::Command)
     }
 
     /// [`Self::start_viewing`], showing it on `input_output` when that is a physical output:
@@ -3410,6 +3410,7 @@ impl Niri {
         &mut self,
         name: &str,
         input_output: Option<&Output>,
+        origin: ViewOrigin,
     ) -> Result<ViewOutputState, VirtualOutputError> {
         let Some(source) = self.layout.outputs().find(|o| o.name() == name).cloned() else {
             return Err(VirtualOutputError::NotFound(name.to_owned()));
@@ -3444,15 +3445,19 @@ impl Niri {
                 );
             }
         }
-        info!(viewer = %viewer_name, source = name, "started viewing output");
+        info!(viewer = %viewer_name, source = name, ?origin, "started viewing output");
         self.projection_state.viewing = Some(Viewing {
             viewer: viewer_name.clone(),
             source: name.to_owned(),
+            origin,
         });
         self.rebuild_projections();
         self.layout.focus_output(&source);
-        self.view_output_label
-            .show(&viewer_name, format!("Viewing: {name}"));
+        let label = match origin {
+            ViewOrigin::Command => format!("Viewing: {name}"),
+            ViewOrigin::Overview => format!("Viewing: {name} — Esc to return"),
+        };
+        self.view_output_label.show(&viewer_name, label);
         self.queue_redraw(&viewer);
 
         Ok(ViewOutputState::Viewing {
@@ -3464,11 +3469,16 @@ impl Niri {
     /// Ends view mode, returning the viewer to its own workspaces and making
     /// it the active monitor. `reason` says what ended it, for the log.
     pub fn stop_viewing(&mut self, reason: &'static str) -> ViewOutputState {
-        let Some(Viewing { viewer, source }) = self.projection_state.viewing.take() else {
+        let Some(Viewing {
+            viewer,
+            source,
+            origin,
+        }) = self.projection_state.viewing.take()
+        else {
             return ViewOutputState::NotViewing;
         };
 
-        info!(%viewer, %source, reason, "stopped viewing output");
+        info!(%viewer, %source, ?origin, reason, "stopped viewing output");
         self.rebuild_projections();
         let output = self.layout.outputs().find(|o| o.name() == viewer).cloned();
         if let Some(output) = output {
@@ -3489,6 +3499,24 @@ impl Niri {
         };
         if viewer_active {
             self.stop_viewing("viewer became the active monitor");
+        }
+    }
+
+    /// Handles an unmodified Escape that nothing else took: leaves view mode if it was
+    /// entered from the overview, returning the viewer to its own workspaces. Returns whether
+    /// it did, in which case the key must not reach the client.
+    pub fn leave_overview_view_on_escape(&mut self) -> bool {
+        let origin = self.projection_state.viewing.as_ref().map(|v| v.origin);
+        match origin {
+            Some(ViewOrigin::Overview) => {
+                self.stop_viewing("escape pressed");
+                true
+            }
+            Some(ViewOrigin::Command) => {
+                debug!("escape in view mode goes to the client: view entered by command");
+                false
+            }
+            None => false,
         }
     }
 
@@ -3526,7 +3554,9 @@ impl Niri {
         self.layout.toggle_overview_to_workspace(ws_idx);
 
         if is_source {
-            if let Err(error) = self.start_viewing_on(&output_name, Some(input_output)) {
+            if let Err(error) =
+                self.start_viewing_on(&output_name, Some(input_output), ViewOrigin::Overview)
+            {
                 warn!(output = %output_name, %error, "cannot view the clicked virtual output");
             }
         }

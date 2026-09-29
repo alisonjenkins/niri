@@ -584,6 +584,22 @@ impl State {
                         }
                     }
 
+                    // Only an Escape no bind, compositor UI or shortcut-inhibiting client wants.
+                    if pressed
+                        && raw == Some(Keysym::Escape)
+                        && modifiers.is_empty()
+                        && !is_inhibiting_shortcuts
+                        && !this.niri.is_locked()
+                        && !this.niri.screenshot_ui.is_open()
+                        && !this.niri.window_mru_ui.is_open()
+                        && !this.niri.layout.is_overview_open()
+                        && this.niri.leave_overview_view_on_escape()
+                    {
+                        // The release is swallowed through suppressed_keys too.
+                        this.niri.suppressed_keys.insert(key_code);
+                        return FilterResult::Intercept(None);
+                    }
+
                     // Interaction with the active window, immediately update the active window's
                     // focus timestamp without waiting for a possible pending MRU lock-in delay.
                     this.niri.mru_apply_keyboard_commit();
