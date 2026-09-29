@@ -9,7 +9,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
-use crate::{Cast, Event, KeyboardLayouts, Window, Workspace};
+use crate::{Cast, Event, KeyboardLayouts, Output, ViewOutputState, Window, Workspace};
 
 /// Part of the state communicated via the event stream.
 pub trait EventStreamStatePart {
@@ -49,6 +49,12 @@ pub struct EventStreamState {
 
     /// State of screencasts.
     pub casts: CastsState,
+
+    /// State of view mode.
+    pub view_output: ViewOutputEventState,
+
+    /// State of the outputs.
+    pub outputs: OutputsState,
 }
 
 /// The workspaces state communicated over the event stream.
@@ -93,6 +99,28 @@ pub struct CastsState {
     pub casts: HashMap<u64, Cast>,
 }
 
+/// The view mode state communicated over the event stream.
+#[derive(Debug)]
+pub struct ViewOutputEventState {
+    /// Whether a physical output is viewing a virtual output, and which.
+    pub state: ViewOutputState,
+}
+
+impl Default for ViewOutputEventState {
+    fn default() -> Self {
+        Self {
+            state: ViewOutputState::NotViewing,
+        }
+    }
+}
+
+/// The outputs state communicated over the event stream.
+#[derive(Debug, Default)]
+pub struct OutputsState {
+    /// Map from an output name to the output.
+    pub outputs: HashMap<String, Output>,
+}
+
 impl EventStreamStatePart for EventStreamState {
     fn replicate(&self) -> Vec<Event> {
         let mut events = Vec::new();
@@ -102,6 +130,8 @@ impl EventStreamStatePart for EventStreamState {
         events.extend(self.overview.replicate());
         events.extend(self.config.replicate());
         events.extend(self.casts.replicate());
+        events.extend(self.view_output.replicate());
+        events.extend(self.outputs.replicate());
         events
     }
 
@@ -112,6 +142,8 @@ impl EventStreamStatePart for EventStreamState {
         let event = self.overview.apply(event)?;
         let event = self.config.apply(event)?;
         let event = self.casts.apply(event)?;
+        let event = self.view_output.apply(event)?;
+        let event = self.outputs.apply(event)?;
         Some(event)
     }
 }
@@ -298,6 +330,42 @@ impl EventStreamStatePart for ConfigState {
     }
 }
 
+impl EventStreamStatePart for ViewOutputEventState {
+    fn replicate(&self) -> Vec<Event> {
+        vec![Event::ViewOutputChanged {
+            state: self.state.clone(),
+        }]
+    }
+
+    fn apply(&mut self, event: Event) -> Option<Event> {
+        match event {
+            Event::ViewOutputChanged { state } => {
+                self.state = state;
+            }
+            event => return Some(event),
+        }
+        None
+    }
+}
+
+impl EventStreamStatePart for OutputsState {
+    fn replicate(&self) -> Vec<Event> {
+        vec![Event::OutputsChanged {
+            outputs: self.outputs.clone(),
+        }]
+    }
+
+    fn apply(&mut self, event: Event) -> Option<Event> {
+        match event {
+            Event::OutputsChanged { outputs } => {
+                self.outputs = outputs;
+            }
+            event => return Some(event),
+        }
+        None
+    }
+}
+
 impl EventStreamStatePart for CastsState {
     fn replicate(&self) -> Vec<Event> {
         let casts = self.casts.values().cloned().collect();
@@ -319,5 +387,125 @@ impl EventStreamStatePart for CastsState {
             event => return Some(event),
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output(name: &str) -> Output {
+        Output {
+            name: name.to_string(),
+            make: String::new(),
+            model: String::new(),
+            serial: None,
+            physical_size: None,
+            modes: vec![],
+            current_mode: None,
+            is_custom_mode: false,
+            vrr_supported: false,
+            vrr_enabled: false,
+            logical: None,
+            max_bpc: None,
+        }
+    }
+
+    fn viewing() -> ViewOutputState {
+        ViewOutputState::Viewing {
+            viewer: "DP-2".to_string(),
+            source: "steam".to_string(),
+        }
+    }
+
+    #[test]
+    fn view_output_state_replicates_not_viewing_initially() {
+        let state = ViewOutputEventState::default();
+        let events = state.replicate();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::ViewOutputChanged {
+                state: ViewOutputState::NotViewing
+            }]
+        ));
+    }
+
+    #[test]
+    fn view_output_state_applies_its_event_and_replicates_it() {
+        let mut state = ViewOutputEventState::default();
+        let rest = state.apply(Event::ViewOutputChanged { state: viewing() });
+        assert!(rest.is_none());
+        assert_eq!(state.state, viewing());
+
+        let events = state.replicate();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::ViewOutputChanged { state }] if *state == viewing()
+        ));
+    }
+
+    #[test]
+    fn view_output_state_passes_other_events_on() {
+        let mut state = ViewOutputEventState::default();
+        let rest = state.apply(Event::OverviewOpenedOrClosed { is_open: true });
+        assert!(matches!(
+            rest,
+            Some(Event::OverviewOpenedOrClosed { is_open: true })
+        ));
+        assert_eq!(state.state, ViewOutputState::NotViewing);
+    }
+
+    #[test]
+    fn outputs_state_replicates_an_empty_map_initially() {
+        let state = OutputsState::default();
+        let events = state.replicate();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::OutputsChanged { outputs }] if outputs.is_empty()
+        ));
+    }
+
+    #[test]
+    fn outputs_state_applies_its_event_and_replicates_it() {
+        let mut state = OutputsState::default();
+        let outputs = HashMap::from([
+            ("DP-2".to_string(), output("DP-2")),
+            ("steam".to_string(), output("steam")),
+        ]);
+        let rest = state.apply(Event::OutputsChanged { outputs });
+        assert!(rest.is_none());
+
+        let events = state.replicate();
+        let [Event::OutputsChanged { outputs }] = events.as_slice() else {
+            panic!("unexpected replicated events: {events:?}");
+        };
+        let mut names: Vec<_> = outputs.keys().cloned().collect();
+        names.sort();
+        assert_eq!(names, ["DP-2", "steam"]);
+    }
+
+    #[test]
+    fn outputs_state_passes_other_events_on() {
+        let mut state = OutputsState::default();
+        let rest = state.apply(Event::ConfigLoaded { failed: false });
+        assert!(matches!(rest, Some(Event::ConfigLoaded { failed: false })));
+        assert!(state.outputs.is_empty());
+    }
+
+    #[test]
+    fn full_state_replicates_both_new_parts() {
+        let mut state = EventStreamState::default();
+        state.apply(Event::ViewOutputChanged { state: viewing() });
+        state.apply(Event::OutputsChanged {
+            outputs: HashMap::from([("steam".to_string(), output("steam"))]),
+        });
+
+        let events = state.replicate();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::ViewOutputChanged { state } if *state == viewing())));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::OutputsChanged { outputs } if outputs.contains_key("steam"))
+        ));
     }
 }

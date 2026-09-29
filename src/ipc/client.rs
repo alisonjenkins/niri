@@ -536,6 +536,36 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
                     Event::CastStopped { stream_id } => {
                         println!("Cast stopped: stream id {stream_id}");
                     }
+                    Event::ViewOutputChanged { state } => match state {
+                        ViewOutputState::Viewing { viewer, source } => {
+                            println!("View output: {source} on {viewer}");
+                        }
+                        ViewOutputState::Stopped { .. } | ViewOutputState::NotViewing => {
+                            println!("View output: none");
+                        }
+                    },
+                    Event::OutputsChanged { outputs } => {
+                        let mut outputs: Vec<_> = outputs.into_values().collect();
+                        outputs.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+                        let list = outputs
+                            .iter()
+                            .map(|output| {
+                                // A turned-off output keeps its mode on some backends, but never
+                                // has a place in the layout.
+                                let state = if output.logical.is_some() {
+                                    "on"
+                                } else {
+                                    "off"
+                                };
+                                format!("{} ({state})", output.name)
+                            })
+                            .collect::<Vec<_>>();
+                        if list.is_empty() {
+                            println!("Outputs changed: none");
+                        } else {
+                            println!("Outputs changed: {}", list.join(", "));
+                        }
+                    }
                 }
             }
         }

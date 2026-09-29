@@ -1831,6 +1831,21 @@ pub enum Event {
         /// Stream ID of the stopped screencast.
         stream_id: u64,
     },
+    /// View mode started, stopped or switched output.
+    ///
+    /// Sent on connect with the current state.
+    ViewOutputChanged {
+        /// `Viewing { viewer, source }` while a physical output shows a virtual output,
+        /// otherwise `NotViewing`. `Stopped` is never sent in this event.
+        state: ViewOutputState,
+    },
+    /// An output was connected, disconnected, turned on or turned off.
+    ///
+    /// Sent on connect with the current outputs.
+    OutputsChanged {
+        /// All outputs, keyed by connector name, as returned by the `Outputs` request.
+        outputs: HashMap<String, Output>,
+    },
 }
 
 impl From<Duration> for Timestamp {
@@ -2255,5 +2270,59 @@ mod tests {
         );
         assert!("-".parse::<PositionChange>().is_err());
         assert!("10% ".parse::<PositionChange>().is_err());
+    }
+
+    fn assert_event_round_trips(event: &Event, json: &str) {
+        assert_eq!(serde_json::to_string(event).unwrap(), json);
+        let parsed: Event = serde_json::from_str(json).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn view_output_changed_matches_the_contract_json() {
+        assert_event_round_trips(
+            &Event::ViewOutputChanged {
+                state: ViewOutputState::Viewing {
+                    viewer: "DP-2".to_string(),
+                    source: "steam".to_string(),
+                },
+            },
+            r#"{"ViewOutputChanged":{"state":{"Viewing":{"viewer":"DP-2","source":"steam"}}}}"#,
+        );
+        assert_event_round_trips(
+            &Event::ViewOutputChanged {
+                state: ViewOutputState::NotViewing,
+            },
+            r#"{"ViewOutputChanged":{"state":"NotViewing"}}"#,
+        );
+    }
+
+    #[test]
+    fn outputs_changed_is_keyed_by_output_name() {
+        let output = Output {
+            name: "steam".to_string(),
+            make: "niri".to_string(),
+            model: "virtual".to_string(),
+            serial: None,
+            physical_size: None,
+            modes: vec![],
+            current_mode: None,
+            is_custom_mode: true,
+            vrr_supported: false,
+            vrr_enabled: false,
+            logical: None,
+            max_bpc: None,
+        };
+        assert_event_round_trips(
+            &Event::OutputsChanged {
+                outputs: HashMap::from([("steam".to_string(), output)]),
+            },
+            concat!(
+                r#"{"OutputsChanged":{"outputs":{"steam":{"name":"steam","make":"niri","#,
+                r#""model":"virtual","serial":null,"physical_size":null,"modes":[],"#,
+                r#""current_mode":null,"is_custom_mode":true,"vrr_supported":false,"#,
+                r#""vrr_enabled":false,"logical":null,"max_bpc":null}}}}"#,
+            ),
+        );
     }
 }
