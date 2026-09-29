@@ -4946,7 +4946,8 @@ mod overview_band_render_tests {
     use smithay::utils::{Logical, Physical, Rectangle, Scale, Size};
 
     use super::overview_band_tests::{fill_workspaces, full_band, tiles};
-    use super::overview_tests::{map_window_on, output_named};
+    use super::overview_drag_tests::{in_tile, press_and_move, release};
+    use super::overview_tests::{map_window_on, output_named, window_center_on};
     use crate::niri::OutputRenderElements;
     use crate::projection::{Projection, ProjectionKind};
     use crate::render_helpers::solid_color::SolidColorBuffer;
@@ -5115,6 +5116,62 @@ mod overview_band_render_tests {
             .filter(|p| matches!(p.kind, ProjectionKind::Tile { .. }))
             .filter_map(|p| Some((p.clone(), physical(p.region.intersection(band)?))))
             .collect()
+    }
+
+    #[test]
+    fn egl_a_window_dragged_over_a_tile_is_drawn_on_the_viewer() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        let s = map_window_on(&mut f, id, &steam, 400, 300);
+        let v = map_window_on(&mut f, id, &viewer, 400, 300);
+        f.niri().layout.focus_output(&viewer);
+        open_overview(&mut f);
+        let from = window_center_on(f.niri(), &viewer, &v);
+        let to = in_tile(&mut f, &steam, &s);
+
+        press_and_move(&mut f, from, to);
+        assert!(f
+            .niri()
+            .layout
+            .interactive_move_is_moving_above_output(&steam));
+
+        let elements = render(&mut f, &viewer);
+        let state = f.niri_state();
+        let niri = &state.niri;
+        let moved: Vec<Id> = state
+            .backend
+            .headless()
+            .with_primary_renderer(|renderer| {
+                let ctx = RenderCtx {
+                    renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                let mut ids = Vec::new();
+                niri.layout
+                    .render_interactive_move_for_output(ctx, &steam, &mut |elem| {
+                        ids.push(elem.id().clone())
+                    });
+                ids
+            })
+            .unwrap();
+        assert!(!moved.is_empty());
+        let band_fill = band_fill_index(&elements);
+        for id in &moved {
+            let idx = elements
+                .iter()
+                .position(|e| e.id() == id)
+                .unwrap_or_else(|| {
+                    panic!("the dragged window's {id:?} is not drawn on the viewer")
+                });
+            assert!(
+                idx < band_fill,
+                "the dragged window is drawn under the band"
+            );
+        }
+        release(&mut f);
     }
 
     #[test]
