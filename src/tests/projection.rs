@@ -1122,6 +1122,7 @@ mod overview_tests {
 }
 
 mod view_tests {
+    use niri_config::Action;
     use niri_ipc::ViewOutputState;
     use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
     use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
@@ -1409,6 +1410,42 @@ mod view_tests {
             f.niri_state().view_output(None),
             Ok(ViewOutputState::NotViewing)
         );
+    }
+
+    #[test]
+    fn view_output_bind_enters_view_mode_and_leaves_it() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1).name();
+
+        f.niri_state()
+            .do_action(Action::ViewOutput(Some("steam".to_string())), false);
+        assert_eq!(
+            viewing(&mut f),
+            Some(Viewing {
+                viewer: viewer.clone(),
+                source: "steam".to_string(),
+            })
+        );
+
+        f.niri_state().do_action(Action::ViewOutput(None), false);
+        assert_eq!(viewing(&mut f), None);
+        assert_eq!(active_output_name(&mut f), viewer);
+    }
+
+    #[test]
+    fn a_rejected_view_output_bind_shows_the_error_on_the_screen() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1).name();
+
+        f.niri_state()
+            .do_action(Action::ViewOutput(Some("nope".to_string())), false);
+
+        let expected = VirtualOutputError::NotFound("nope".to_string()).to_string();
+        assert_eq!(
+            f.niri().view_output_label.text_on(&viewer),
+            Some(expected.as_str())
+        );
+        assert_eq!(viewing(&mut f), None);
     }
 
     #[test]
