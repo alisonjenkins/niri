@@ -27,6 +27,8 @@ pub struct TouchOverviewGrab {
     last_location: Point<f64, Logical>,
     output: Output,
     start_pos_within_output: Point<f64, Logical>,
+    /// The projection scale where the grab started; touch deltas divide by it.
+    input_scale: f64,
     workspace_id: Option<WorkspaceId>,
     workspace_matched_narrow: bool,
     window: Option<Window>,
@@ -46,11 +48,13 @@ enum GestureState {
 }
 
 impl TouchOverviewGrab {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         start_data: AnyStartData<State>,
         start_timestamp: Duration,
         output: Output,
         start_pos_within_output: Point<f64, Logical>,
+        input_scale: f64,
         workspace_id: Option<WorkspaceId>,
         workspace_matched_narrow: bool,
         window: Option<Window>,
@@ -63,6 +67,7 @@ impl TouchOverviewGrab {
             start_data,
             output,
             start_pos_within_output,
+            input_scale,
             workspace_id,
             workspace_matched_narrow,
             window,
@@ -140,7 +145,7 @@ impl TouchOverviewGrab {
             return true;
         }
 
-        let delta = self.new_location - self.last_location;
+        let delta = (self.new_location - self.last_location).downscale(self.input_scale);
         self.last_location = self.new_location;
 
         let ongoing = match self.gesture {
