@@ -186,6 +186,19 @@ impl PointerConstraintsHandler for State {
             return;
         }
 
+        // A surface shown through a projection lives on the source output while the pointer
+        // stays on the viewer, so the hint has to go through the projection too.
+        if let Some(target) = self.niri.projected_surface_position(origin, location) {
+            // trace, not debug: clients may send a hint with every commit.
+            trace!(
+                ?location,
+                ?target,
+                "mapped pointer constraint position hint through a projection"
+            );
+            self.niri.pointer_constraint_position_hint = Some(target);
+            return;
+        }
+
         let mut root = surface.clone();
         while let Some(parent) = get_parent(&root) {
             root = parent;

@@ -341,6 +341,13 @@ impl Client {
             .clone()
     }
 
+    /// Locks the pointer to `surface` for as long as the surface has pointer focus.
+    pub fn lock_pointer(&mut self, surface: &WlSurface) -> ZwpLockedPointerV1 {
+        let pointer = self.pointer();
+        let constraints = self.state.pointer_constraints.as_ref().unwrap();
+        constraints.lock_pointer(surface, &pointer, None, Lifetime::Persistent, &self.qh, ())
+    }
+
     /// Confines the pointer to `rect` (x, y, w, h) of `surface`.
     pub fn confine_pointer(
         &mut self,

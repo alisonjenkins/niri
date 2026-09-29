@@ -2414,4 +2414,34 @@ mod input_tests {
         input::pointer_motion(&mut f, (60., 0.));
         assert_eq!(pointer(&mut f), inside, "the confinement is not active");
     }
+
+    #[test]
+    fn a_lock_position_hint_lands_on_the_viewer_under_projection_scale() {
+        let mut f = set_up_with(Config::default(), (1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let (surface, to_global) = view_window_under_pointer(&mut f, id, Point::from((100., 100.)));
+        let locked = f.client(id).lock_pointer(&surface);
+        f.double_roundtrip(id);
+        let locked_at = pointer(&mut f);
+        input::pointer_motion(&mut f, (30., 30.));
+        assert_eq!(pointer(&mut f), locked_at, "the lock is not active");
+
+        locked.set_cursor_position_hint(50., 60.);
+        surface.commit();
+        f.double_roundtrip(id);
+        locked.destroy();
+        f.double_roundtrip(id);
+
+        let p = pointer(&mut f);
+        let expected = to_global(Point::from((50., 60.)));
+        let viewer_geo = geometry(&mut f, &viewer);
+        assert!(
+            viewer_geo.contains(p)
+                && (p - expected).x.abs() < 1e-6
+                && (p - expected).y.abs() < 1e-6,
+            "unlocking warped the pointer to {p:?}, expected the hint at {expected:?} on the \
+             viewer {viewer_geo:?}"
+        );
+    }
 }

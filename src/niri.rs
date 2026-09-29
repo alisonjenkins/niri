@@ -3853,6 +3853,32 @@ impl Niri {
             .and_then(|rect| rect.intersection(viewer_geo))
     }
 
+    /// Where the real cursor goes for `surface_local`, a position within the surface under
+    /// the pointer whose focus location is `focus_location`, when that surface is shown
+    /// through a projection; clamped to the viewer. `None` when the pointer is not over a
+    /// projection.
+    pub fn projected_surface_position(
+        &self,
+        focus_location: Point<f64, Logical>,
+        surface_local: Point<f64, Logical>,
+    ) -> Option<Point<f64, Logical>> {
+        let pointer = self.seat.get_pointer()?.current_location();
+        let hit = self.resolve_output_under(pointer)?;
+        let projection = hit.projection?;
+        let (viewer, _) = self.physical_output_under(pointer)?;
+        let mut viewer_geo = self.global_space.output_geometry(viewer)?;
+
+        // contents_under() synthesizes the focus location so that pointer - focus_location is
+        // the exact surface-local position at the pointer.
+        let surface_origin_in_source = hit.pos_within_output - (pointer - focus_location);
+        let target = projection.to_viewer(surface_origin_in_source + surface_local)
+            + viewer_geo.loc.to_f64();
+
+        // i32 sizes are exclusive, but f64 sizes are inclusive.
+        viewer_geo.size -= (1, 1).into();
+        Some(target.constrain(viewer_geo.to_f64()))
+    }
+
     /// The output a global position physically lies on, ignoring projections, or `fallback`
     /// if it lies on none.
     pub fn physical_output_at(&self, pos: Point<f64, Logical>, fallback: &Output) -> Output {
