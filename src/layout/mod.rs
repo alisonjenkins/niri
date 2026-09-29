@@ -4400,6 +4400,15 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    /// The output a window is being interactively moved over and the pointer position within
+    /// it.
+    pub fn interactive_move_pointer(&self) -> Option<(&Output, Point<f64, Logical>)> {
+        let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move else {
+            return None;
+        };
+        Some((&move_.output, move_.pointer_pos_within_output))
+    }
+
     pub fn interactive_move_is_moving_above_output(&self, output: &Output) -> bool {
         let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move else {
             return false;

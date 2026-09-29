@@ -5747,6 +5747,7 @@ impl Niri {
 
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
+            self.render_interactive_move_through_tile(ctx.r(), output, push);
 
             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
 
@@ -5848,6 +5849,55 @@ impl Niri {
         if let Some(fill) = self.overview_band.render_fill(band) {
             push(fill.into());
         }
+    }
+
+    /// Renders a window being moved over one of `viewer`'s band tiles where the pointer holds
+    /// it, scaled as the tile shows its source.
+    ///
+    /// The move belongs to the tile's source while the pointer is over the tile, so the
+    /// viewer's own interactive-move render draws nothing for it.
+    fn render_interactive_move_through_tile<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        viewer: &Output,
+        push: &mut dyn FnMut(OutputRenderElements<R>),
+    ) {
+        if is_virtual_output(viewer) {
+            return;
+        }
+        // Found from the move's own position rather than the pointer, whose lock a grab
+        // rendering this frame (such as the colour picker) may hold.
+        let Some((source, pos_within_source)) = self.layout.interactive_move_pointer() else {
+            return;
+        };
+        let viewer_name = viewer.name();
+        let source_name = source.name();
+        let Some(projection) = self.projection_state.projections.iter().find(|p| {
+            p.viewer == viewer_name
+                && p.source == source_name
+                && matches!(p.kind, ProjectionKind::Tile { .. })
+                && p.region.contains(p.to_viewer(pos_within_source))
+        }) else {
+            return;
+        };
+
+        let viewer_scale = viewer.current_scale().fractional_scale();
+        let source_scale = source.current_scale().fractional_scale();
+        let crop =
+            Rectangle::from_size(output_size(viewer)).to_physical_precise_round(viewer_scale);
+        self.layout
+            .render_interactive_move_for_output(ctx.r(), source, &mut |elem| {
+                let elem = ProjectedElement::new(
+                    OutputRenderElements::from(elem),
+                    source_scale,
+                    projection.source_rect,
+                    viewer_scale,
+                    projection.region,
+                );
+                if let Some(elem) = CropRenderElement::from_element(elem, viewer_scale, crop) {
+                    push(OutputRenderElements::Projected(elem));
+                }
+            });
     }
 
     /// Renders the workspace `projection` shows, as the source's overview draws it, scaled
