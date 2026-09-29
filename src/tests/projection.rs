@@ -2998,6 +2998,22 @@ mod pick_color_tests {
     }
 
     #[test]
+    fn egl_picking_a_letterbox_bar_in_view_mode_returns_its_black() {
+        let (mut f, viewer) = set_up((1920, 1080));
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        let loc = viewer_loc(&mut f, &viewer);
+
+        let color = pick_at(&mut f, loc + Point::from((10., 540.)));
+
+        assert_eq!(
+            color.map(|c| c.rgb),
+            Some([0., 0., 0.]),
+            "the bar is drawn black on the viewer, so picking it should return black"
+        );
+    }
+
+    #[test]
     fn egl_picking_without_projections_samples_the_output_under_the_pointer() {
         let (mut f, viewer) = set_up((1920, 1080));
         let loc = viewer_loc(&mut f, &viewer);
