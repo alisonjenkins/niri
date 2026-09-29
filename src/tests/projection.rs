@@ -1501,6 +1501,52 @@ mod view_tests {
     }
 
     #[test]
+    fn clicking_a_source_workspace_on_another_monitor_moves_view_mode_there() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        f.add_output(2, (1920, 1080));
+        let first = f.niri_output(1);
+        let second = f.niri_output(2);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().layout.focus_output(&first);
+        start(&mut f, "steam");
+        assert_eq!(viewing(&mut f).unwrap().viewer, first.name());
+        open_overview(&mut f);
+        let (ws_id, _) = workspace_on(&mut f, &steam, 1);
+
+        f.niri().activate_overview_workspace(&steam, ws_id, &second);
+        f.niri_complete_animations();
+
+        assert_eq!(
+            viewing(&mut f),
+            Some(Viewing {
+                viewer: second.name(),
+                source: "steam".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_virtual_input_output_keeps_the_current_viewer() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800), ("other", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let other = output_named(&mut f, "other");
+        map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().layout.focus_output(&viewer);
+        start(&mut f, "steam");
+        open_overview(&mut f);
+        let (ws_id, _) = workspace_on(&mut f, &steam, 1);
+
+        f.niri().activate_overview_workspace(&steam, ws_id, &other);
+        f.niri_complete_animations();
+
+        assert_eq!(viewing(&mut f).unwrap().viewer, viewer.name());
+    }
+
+    #[test]
     fn clicking_a_viewer_workspace_in_the_overview_behaves_as_before() {
         let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
         let viewer = f.niri_output(1);
