@@ -1893,12 +1893,15 @@ mod input_tests {
     use smithay::desktop::Window;
     use smithay::input::pointer::{Focus, GrabStartData as PointerGrabStartData};
     use smithay::output::Output;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
     use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
 
     use super::overview_tests::{map_window_on, output_named, window_center_on};
     use crate::input::move_grab::MoveGrab;
     use crate::input::AnyStartData;
     use crate::projection::{Projection, ProjectionKind};
+    use crate::tests::client::LayerConfigureProps;
     use crate::tests::fixture::Fixture;
     use crate::tests::input;
 
@@ -2218,5 +2221,49 @@ mod input_tests {
                 && (p - expected).y.abs() < 1e-6,
             "pointer {p:?} should have moved to {expected:?} on the viewer {viewer_geo:?}"
         );
+    }
+
+    #[test]
+    fn the_viewers_top_layer_takes_input_over_overview_columns() {
+        let mut f = set_up_with(Config::default(), (5120, 1440), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        map_window_on(&mut f, id, &steam, 1280, 800);
+        f.niri().layout.focus_output(&viewer);
+
+        // A bar down the viewer's right side, covering where the steam column is drawn.
+        let layer = f.client(id).create_layer(None, Layer::Top, "bar");
+        let surface = layer.surface.clone();
+        layer.set_configure_props(LayerConfigureProps {
+            anchor: Some(Anchor::Right | Anchor::Top | Anchor::Bottom),
+            size: Some((3000, 0)),
+            ..Default::default()
+        });
+        layer.commit();
+        f.roundtrip(id);
+        let layer = f.client(id).layer(&surface);
+        layer.attach_new_buffer();
+        layer.set_size(3000, 1440);
+        layer.ack_last_and_commit();
+        f.double_roundtrip(id);
+
+        open_overview(&mut f);
+        let viewer_geo = geometry(&mut f, &viewer);
+        let column = overview_projection(&mut f, "steam").region;
+        assert!(
+            column.loc.x >= 5120. - 3000.,
+            "the bar does not cover the column {column:?}"
+        );
+        f.niri_state().move_cursor(center(column) + viewer_geo.loc);
+        input::pointer_motion(&mut f, (1., 0.));
+
+        let contents = &f.niri().pointer_contents;
+        assert!(
+            contents.layer.is_some(),
+            "the top-layer bar drawn above the column lost the pointer to {:?}",
+            contents.output.as_ref().map(|o| o.name())
+        );
+        assert_eq!(contents.output.as_ref(), Some(&viewer));
     }
 }

@@ -3695,7 +3695,23 @@ impl Niri {
             .iter()
             .any(|p| p.viewer == viewer_name);
         // The viewer's overlay layer is drawn above its projections.
-        if is_viewer && self.is_overlay_layer_surface_under(output, pos_within_output) {
+        if is_viewer && self.is_layer_surface_under(output, Layer::Overlay, pos_within_output) {
+            return Some(unprojected);
+        }
+        // So is its top layer while it draws overview columns: render_inner() puts the top
+        // layer above the workspaces and the columns, unless a fullscreen window renders above
+        // the top layer. View mode hides the top layer instead.
+        let shows_columns = self
+            .projection_state
+            .projections
+            .iter()
+            .any(|p| p.viewer == viewer_name && p.kind == ProjectionKind::Overview);
+        let top_layer_above = shows_columns
+            && self
+                .layout
+                .monitor_for_output(output)
+                .is_some_and(|mon| !mon.render_above_top_layer());
+        if top_layer_above && self.is_layer_surface_under(output, Layer::Top, pos_within_output) {
             return Some(unprojected);
         }
 
@@ -3747,18 +3763,23 @@ impl Niri {
             .map_or(1., Projection::scale)
     }
 
-    /// Whether a mapped overlay-layer surface on `output` is under the
+    /// Whether a mapped surface of `layer` on `output` that takes input is under the
     /// position.
-    fn is_overlay_layer_surface_under(
+    fn is_layer_surface_under(
         &self,
         output: &Output,
+        layer: Layer,
         pos_within_output: Point<f64, Logical>,
     ) -> bool {
         let layers = layer_map_for_output(output);
-        let under = layers.layers_on(Layer::Overlay).any(|layer| {
+        let under = layers.layers_on(layer).any(|layer| {
             let Some(mapped) = self.mapped_layer_surfaces.get(layer) else {
                 return false;
             };
+            // Matches contents_under(), which gives such surfaces no input.
+            if mapped.place_within_backdrop() {
+                return false;
+            }
             let Some(geo) = layers.layer_geometry(layer) else {
                 return false;
             };
