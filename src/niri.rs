@@ -8066,6 +8066,42 @@ impl Niri {
             self.queue_redraw(&output);
         }
     }
+
+    /// The output the Alt-Tab switcher opens on while `active` is the active output.
+    ///
+    /// A source in view mode is only seen through its viewer, and a projection never carries
+    /// the global UI, so the switcher goes on the viewer instead.
+    pub fn mru_output_for(&self, active: &Output) -> Output {
+        let source = active.name();
+        let viewer = self
+            .projection_state
+            .projections
+            .iter()
+            .find(|p| p.kind == ProjectionKind::View && p.source == source)
+            .and_then(|p| self.layout.outputs().find(|o| o.name() == p.viewer));
+        match viewer {
+            Some(viewer) => {
+                debug!(
+                    source = %source,
+                    viewer = %viewer.name(),
+                    "opening the window switcher on the viewer of the active output"
+                );
+                viewer.clone()
+            }
+            None => active.clone(),
+        }
+    }
+
+    /// The position within the open Alt-Tab switcher's output of the global `pos`, or `None`
+    /// when `pos` is not on that output.
+    ///
+    /// The switcher is global UI drawn above any projection on its own output and never
+    /// inside one, so this ignores projections: pointer input reaches it only where it is seen.
+    pub fn mru_pos_under(&self, pos: Point<f64, Logical>) -> Option<Point<f64, Logical>> {
+        let mru_output = self.window_mru_ui.output()?;
+        let (output, pos_within_output) = self.physical_output_under(pos)?;
+        (output == mru_output).then_some(pos_within_output)
+    }
 }
 
 pub struct NewClient {
