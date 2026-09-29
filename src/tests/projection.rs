@@ -1188,75 +1188,6 @@ mod overview_tests {
     }
 
     #[test]
-    fn scrolling_a_source_tile_switches_its_workspaces_only() {
-        let mut f = set_up((5120, 1440), &[("steam", 1280, 800)]);
-        let id = f.add_client();
-        let steam = output_named(&mut f, "steam");
-        let viewer = f.niri_output(1);
-        map_window_on(&mut f, id, &steam, 300, 300);
-        map_window_on(&mut f, id, &steam, 300, 300);
-        f.niri().layout.move_to_workspace_down(false);
-        f.double_roundtrip(id);
-        open_overview(&mut f);
-
-        let niri = f.niri();
-        let steam_mon = niri.layout.monitor_for_output(&steam).unwrap();
-        assert_eq!(steam_mon.active_workspace_idx(), 0);
-        let viewer_idx = niri
-            .layout
-            .monitor_for_output(&viewer)
-            .unwrap()
-            .active_workspace_idx();
-
-        // A point inside the second steam workspace's tile.
-        let projection = tile_for(niri, "steam", 1);
-        let ws1 = steam_mon.workspaces_render_geo().nth(1).unwrap();
-        let lower = Point::from((center(ws1).x, ws1.loc.y + 10.));
-        let p = projection.to_viewer(lower) + viewer_origin(niri, &viewer);
-
-        let (ws_output, ws) = niri.workspace_under(false, p).unwrap();
-        assert_eq!(ws_output, steam);
-        let ws_id = ws.id();
-        let steam_ws1 = steam_mon
-            .workspaces_with_render_geo()
-            .nth(1)
-            .unwrap()
-            .0
-            .id();
-        assert_eq!(ws_id, steam_ws1);
-
-        // The overview scroll handler begins the gesture on the output under
-        // the cursor, then feeds it scroll deltas.
-        let (output, _) = niri.output_under(p).unwrap();
-        let output = output.clone();
-        assert_eq!(output, steam);
-        niri.layout.workspace_switch_gesture_begin(&output, true);
-        niri.layout.workspace_switch_gesture_update(
-            1000.,
-            std::time::Duration::from_millis(10),
-            true,
-        );
-        niri.layout.workspace_switch_gesture_end(Some(true));
-        f.niri_complete_animations();
-
-        let niri = f.niri();
-        assert_ne!(
-            niri.layout
-                .monitor_for_output(&steam)
-                .unwrap()
-                .active_workspace_idx(),
-            0
-        );
-        assert_eq!(
-            niri.layout
-                .monitor_for_output(&viewer)
-                .unwrap()
-                .active_workspace_idx(),
-            viewer_idx
-        );
-    }
-
-    #[test]
     fn every_enabled_source_gets_its_own_tiles() {
         let mut f = set_up((5120, 1440), &[("steam", 1280, 800), ("aux", 1920, 1080)]);
         let id = f.add_client();
@@ -4530,6 +4461,158 @@ mod overview_column_tests {
         let region = last(&mut f).expect("the last group is reachable");
         assert_eq!(region.size, one);
         assert!(fully_in_band(region), "{region:?}");
+    }
+
+    /// A viewer with windows on two workspaces and steam with four workspaces, the viewer
+    /// active, the overview open and the pointer on steam's first tile.
+    fn scroll_set_up() -> (Fixture, Output, Output) {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        fill_workspaces(&mut f, id, &steam);
+        map_window_on(&mut f, id, &viewer, 400, 300);
+        f.niri().layout.switch_workspace_down();
+        map_window_on(&mut f, id, &viewer, 400, 300);
+        f.niri().layout.switch_workspace(0);
+        f.niri().layout.focus_output(&viewer);
+        f.niri_complete_animations();
+        toggle_overview(&mut f);
+        let tile = tile_for(f.niri(), "steam", 0).region;
+        move_pointer_to(&mut f, tile.loc + tile.size.downscale(2.).to_point());
+        (f, viewer, steam)
+    }
+
+    fn active_idx(f: &mut Fixture, output: &Output) -> usize {
+        f.niri()
+            .layout
+            .monitor_for_output(output)
+            .unwrap()
+            .active_workspace_idx()
+    }
+
+    fn settle(f: &mut Fixture) {
+        refresh(f);
+        f.niri_complete_animations();
+        refresh(f);
+    }
+
+    #[test]
+    fn the_wheel_over_the_band_scrolls_only_the_column() {
+        let (mut f, viewer, steam) = scroll_set_up();
+        assert_eq!(scroll(&mut f, &viewer), 0.);
+
+        input::wheel(&mut f, 1.);
+        settle(&mut f);
+
+        let scrolled = scroll(&mut f, &viewer);
+        assert!(scrolled > 0.);
+        assert!(f.niri().layout.is_overview_open());
+        assert_eq!(active_idx(&mut f, &steam), 0);
+        assert_eq!(active_idx(&mut f, &viewer), 0);
+
+        // Also over the band's background, and back up.
+        move_pointer_to(&mut f, full_band().loc + Point::from((2., 700.)));
+        input::wheel(&mut f, -1.);
+        settle(&mut f);
+        assert!(scroll(&mut f, &viewer) < scrolled);
+        assert_eq!(active_idx(&mut f, &steam), 0);
+        assert_eq!(active_idx(&mut f, &viewer), 0);
+    }
+
+    #[test]
+    fn the_wheel_over_the_viewer_switches_its_workspace_as_before() {
+        let (mut f, viewer, steam) = scroll_set_up();
+        let ws = f
+            .niri()
+            .layout
+            .monitor_for_output(&viewer)
+            .unwrap()
+            .workspaces_render_geo()
+            .next()
+            .unwrap();
+        move_pointer_to(&mut f, ws.loc + ws.size.downscale(2.).to_point());
+
+        input::wheel(&mut f, 1.);
+        settle(&mut f);
+
+        assert_eq!(active_idx(&mut f, &viewer), 1);
+        assert_eq!(active_idx(&mut f, &steam), 0);
+        assert_eq!(scroll(&mut f, &viewer), 0.);
+    }
+
+    #[test]
+    fn touchpad_scrolling_over_the_band_scrolls_the_column() {
+        let (mut f, viewer, steam) = scroll_set_up();
+
+        input::touchpad_scroll(&mut f, &[20., 30., 50.]);
+        settle(&mut f);
+
+        assert_eq!(scroll(&mut f, &viewer), 100.);
+        assert_eq!(active_idx(&mut f, &steam), 0);
+        assert_eq!(active_idx(&mut f, &viewer), 0);
+    }
+
+    #[test]
+    fn a_vertical_swipe_over_the_band_scrolls_the_column() {
+        let (mut f, viewer, steam) = scroll_set_up();
+
+        input::swipe(&mut f, 3, &[(0., 10.), (0., 10.), (0., 40.), (0., 60.)]);
+        settle(&mut f);
+
+        let scrolled = scroll(&mut f, &viewer);
+        assert!(scrolled > 0., "{scrolled}");
+        assert!(f.niri().layout.is_overview_open());
+        assert_eq!(active_idx(&mut f, &steam), 0);
+        assert_eq!(active_idx(&mut f, &viewer), 0);
+    }
+
+    #[test]
+    fn non_finite_and_huge_scrolls_stay_clamped() {
+        let (mut f, viewer, _steam) = scroll_set_up();
+        input::touchpad_scroll(&mut f, &[40.]);
+        settle(&mut f);
+        assert_eq!(scroll(&mut f, &viewer), 40.);
+
+        input::touchpad_scroll(&mut f, &[f64::NAN, f64::INFINITY]);
+        settle(&mut f);
+        assert_eq!(scroll(&mut f, &viewer), 40.);
+
+        input::wheel(&mut f, 1e12);
+        settle(&mut f);
+        let max = max_scroll(&mut f, &viewer);
+        assert!(max > 0.);
+        assert_eq!(scroll(&mut f, &viewer), max);
+
+        input::touchpad_scroll(&mut f, &[-1e300]);
+        settle(&mut f);
+        assert_eq!(scroll(&mut f, &viewer), 0.);
+    }
+
+    #[test]
+    fn scrolling_one_band_leaves_the_others_alone() {
+        let (mut f, first, _steam) = scroll_set_up();
+        f.add_output(2, (5120, 1440));
+        settle(&mut f);
+        let second = f.niri_output(2);
+        let second_origin = f
+            .niri()
+            .global_space
+            .output_geometry(&second)
+            .unwrap()
+            .loc
+            .to_f64();
+        assert_eq!(scroll(&mut f, &second), 0.);
+
+        move_pointer_to(
+            &mut f,
+            second_origin + full_band().loc + Point::from((2., 700.)),
+        );
+        input::touchpad_scroll(&mut f, &[70.]);
+        settle(&mut f);
+
+        assert_eq!(scroll(&mut f, &second), 70.);
+        assert_eq!(scroll(&mut f, &first), 0.);
     }
 
     #[test]

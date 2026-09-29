@@ -221,6 +221,9 @@ pub struct ColumnLayout {
     pub skipped: Vec<usize>,
 }
 
+/// How far one mouse wheel detent scrolls the band's column, in logical pixels.
+pub const COLUMN_WHEEL_STEP: f64 = 120.;
+
 /// Height of a group's name-label row, in logical pixels.
 const COLUMN_LABEL_HEIGHT: f64 = 24.;
 /// Horizontal margin on each side of a tile within the band, in logical pixels.
