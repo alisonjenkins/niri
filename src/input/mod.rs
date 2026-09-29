@@ -2362,8 +2362,12 @@ impl State {
                     watcher.load_config(path);
                 }
             }
-            Action::ViewOutput(_name) => {
-                warn!("view-output is not implemented yet");
+            Action::ViewOutput(name) => {
+                // Binds have no reply channel, so the error goes on screen;
+                // view_output has already logged it.
+                if let Err(error) = self.view_output(name.as_deref()) {
+                    self.niri.show_view_output_error(&error);
+                }
             }
             Action::MruConfirm => {
                 self.confirm_mru();

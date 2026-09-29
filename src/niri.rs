@@ -3422,6 +3422,21 @@ impl Niri {
         ViewOutputState::Stopped { viewer, source }
     }
 
+    /// Shows why a view-output bind was refused, on the screen it would have
+    /// used.
+    pub fn show_view_output_error(&mut self, error: &VirtualOutputError) {
+        let Some(output) = self
+            .pick_viewer()
+            .or_else(|| self.layout.active_output().cloned())
+        else {
+            debug!(%error, "no output to show the view-output error on");
+            return;
+        };
+        self.view_output_label
+            .show(&output.name(), error.to_string());
+        self.queue_redraw(&output);
+    }
+
     /// The physical output view mode should show a virtual output on.
     fn pick_viewer(&self) -> Option<Output> {
         let is_physical = |o: &&Output| !is_virtual_output(o);
