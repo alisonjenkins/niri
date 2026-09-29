@@ -83,6 +83,8 @@ pub struct Monitor<W: LayoutElement> {
     overview_progress: Option<OverviewProgress>,
     /// Width reserved at the right edge of the fully open overview, finite and non-negative.
     overview_right_inset: f64,
+    /// Whether the overview renders and hit-tests workspaces outside the output.
+    overview_offscreen_reachable: bool,
     /// Clock for driving animations.
     pub(super) clock: Clock,
     /// Configurable properties of the layout as received from the parent layout.
@@ -345,6 +347,7 @@ impl<W: LayoutElement> Monitor<W> {
             overview_open: false,
             overview_progress: None,
             overview_right_inset: 0.,
+            overview_offscreen_reachable: false,
             workspace_switch: None,
             clock,
             base_options,
@@ -1409,6 +1412,12 @@ impl<W: LayoutElement> Monitor<W> {
         };
     }
 
+    /// Makes the open overview render and hit-test every workspace, including those outside the
+    /// output, for when its workspaces are shown or targeted somewhere other than the output.
+    pub fn set_overview_offscreen_reachable(&mut self, reachable: bool) {
+        self.overview_offscreen_reachable = reachable;
+    }
+
     /// Width of the output that the overview lays its workspaces out in.
     fn overview_area_width(&self) -> f64 {
         let Some(progress) = &self.overview_progress else {
@@ -1423,8 +1432,13 @@ impl<W: LayoutElement> Monitor<W> {
         (self.overview_area_width() - width) / 2.
     }
 
-    pub(super) fn overview_cull_rect(&self) -> Rectangle<f64, Logical> {
-        Rectangle::from_size(Size::from((self.overview_area_width(), self.view_size.h)))
+    /// Rect that workspaces must intersect to be rendered and hit-tested, if any.
+    pub(super) fn overview_cull_rect(&self) -> Option<Rectangle<f64, Logical>> {
+        if self.overview_offscreen_reachable && self.overview_progress.is_some() {
+            return None;
+        }
+        let size = Size::from((self.overview_area_width(), self.view_size.h));
+        Some(Rectangle::from_size(size))
     }
 
     #[cfg(test)]
@@ -1545,12 +1559,12 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         cull: bool,
     ) -> impl Iterator<Item = (&Workspace<W>, Rectangle<f64, Logical>)> {
-        let output_geo = self.overview_cull_rect();
+        let cull_rect = self.overview_cull_rect().filter(|_| cull);
 
         let geo = self.workspaces_render_geo();
         zip(self.workspaces.iter(), geo)
             // Cull out workspaces outside the output.
-            .filter(move |(_ws, geo)| !cull || geo.intersection(output_geo).is_some())
+            .filter(move |(_ws, geo)| cull_rect.is_none_or(|rect| geo.intersection(rect).is_some()))
     }
 
     pub fn workspaces_with_render_geo(
@@ -1562,24 +1576,24 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn workspaces_with_render_geo_idx(
         &self,
     ) -> impl Iterator<Item = ((usize, &Workspace<W>), Rectangle<f64, Logical>)> {
-        let output_geo = self.overview_cull_rect();
+        let cull_rect = self.overview_cull_rect();
 
         let geo = self.workspaces_render_geo();
         zip(self.workspaces.iter().enumerate(), geo)
             // Cull out workspaces outside the output.
-            .filter(move |(_ws, geo)| geo.intersection(output_geo).is_some())
+            .filter(move |(_ws, geo)| cull_rect.is_none_or(|rect| geo.intersection(rect).is_some()))
     }
 
     pub fn workspaces_with_render_geo_mut(
         &mut self,
         cull: bool,
     ) -> impl Iterator<Item = (&mut Workspace<W>, Rectangle<f64, Logical>)> {
-        let output_geo = self.overview_cull_rect();
+        let cull_rect = self.overview_cull_rect().filter(|_| cull);
 
         let geo = self.workspaces_render_geo();
         zip(self.workspaces.iter_mut(), geo)
             // Cull out workspaces outside the output.
-            .filter(move |(_ws, geo)| !cull || geo.intersection(output_geo).is_some())
+            .filter(move |(_ws, geo)| cull_rect.is_none_or(|rect| geo.intersection(rect).is_some()))
     }
 
     pub fn workspace_under(

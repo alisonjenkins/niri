@@ -129,15 +129,15 @@ fn overview_right_inset_limits_workspace_under() {
 fn overview_right_inset_shrinks_the_cull_rect() {
     let mut layout = overview_with_workspaces(2);
     let full = Rectangle::from_size(Size::from((OUTPUT_W, 720.)));
-    assert_eq!(monitor(&layout).overview_cull_rect(), full);
+    assert_eq!(monitor(&layout).overview_cull_rect(), Some(full));
 
     set_inset(&mut layout, 256.);
     let shrunk = Rectangle::from_size(Size::from((OUTPUT_W - 256., 720.)));
-    assert_eq!(monitor(&layout).overview_cull_rect(), shrunk);
+    assert_eq!(monitor(&layout).overview_cull_rect(), Some(shrunk));
 
     // Wider than the output: the rect collapses instead of turning negative.
     set_inset(&mut layout, 2. * OUTPUT_W);
-    assert_eq!(monitor(&layout).overview_cull_rect().size.w, 0.);
+    assert_eq!(monitor(&layout).overview_cull_rect().unwrap().size.w, 0.);
 }
 
 fn dnd_scrolls_at(inset: f64, x: f64) -> bool {
@@ -155,4 +155,70 @@ fn overview_right_inset_moves_the_dnd_scroll_strip() {
     assert!(!dnd_scrolls_at(256., 900.));
     assert!(!dnd_scrolls_at(0., 200.));
     assert!(dnd_scrolls_at(256., 200.));
+}
+
+// Three named workspaces plus the empty last one. With the first one active, the open overview
+// shows workspaces 0 and 1; workspace 2 starts below the output.
+fn overview_with_offscreen_workspaces(reachable: bool) -> Layout<TestWindow> {
+    let mut layout = overview_with_workspaces(3);
+    let output = output(&layout);
+    layout.set_overview_offscreen_reachable(&output, reachable);
+    layout
+}
+
+fn centre(geo: Rectangle<f64, Logical>) -> Point<f64, Logical> {
+    geo.loc + geo.size.downscale(2.).to_point()
+}
+
+#[test]
+fn overview_offscreen_reachable_renders_every_workspace() {
+    let layout = overview_with_offscreen_workspaces(false);
+    assert_eq!(monitor(&layout).workspaces_with_render_geo().count(), 2);
+    assert_eq!(monitor(&layout).workspaces_with_render_geo_idx().count(), 2);
+
+    let layout = overview_with_offscreen_workspaces(true);
+    let mon = monitor(&layout);
+    assert_eq!(mon.workspaces_with_render_geo().count(), 4);
+    assert_eq!(mon.workspaces_with_render_geo_idx().count(), 4);
+    assert_eq!(mon.workspaces_with_render_geo_cull(true).count(), 4);
+}
+
+#[test]
+fn overview_offscreen_reachable_hit_tests_offscreen_workspaces() {
+    let layout = overview_with_offscreen_workspaces(false);
+    let geo = render_geo(&layout);
+    assert!(geo[3].loc.y > 720.);
+    assert!(monitor(&layout).workspace_under(centre(geo[3])).is_none());
+
+    let layout = overview_with_offscreen_workspaces(true);
+    let mon = monitor(&layout);
+    let (ws, ws_geo) = mon.workspace_under(centre(geo[3])).unwrap();
+    assert_eq!(ws.id(), mon.workspaces[3].id());
+    assert_eq!(ws_geo, geo[3]);
+}
+
+#[test]
+fn overview_offscreen_reachable_insert_position_reaches_offscreen_workspaces() {
+    let layout = overview_with_offscreen_workspaces(false);
+    let geo = render_geo(&layout);
+    let past_last = centre(geo[4]);
+    let (insert_ws, _) = monitor(&layout).insert_position(past_last);
+    assert_eq!(insert_ws, InsertWorkspace::NewAt(2));
+
+    let layout = overview_with_offscreen_workspaces(true);
+    let mon = monitor(&layout);
+    let (insert_ws, insert_geo) = mon.insert_position(centre(geo[2]));
+    assert_eq!(insert_ws, InsertWorkspace::Existing(mon.workspaces[2].id()));
+    assert_eq!(insert_geo, geo[2]);
+
+    let (insert_ws, _) = mon.insert_position(past_last);
+    assert_eq!(insert_ws, InsertWorkspace::NewAt(4));
+}
+
+#[test]
+fn overview_offscreen_reachable_needs_the_overview() {
+    let mut layout = overview_with_offscreen_workspaces(true);
+    check_ops_on_layout(&mut layout, [Op::ToggleOverview, Op::CompleteAnimations]);
+
+    assert_eq!(monitor(&layout).workspaces_with_render_geo().count(), 1);
 }
