@@ -2574,4 +2574,66 @@ mod input_tests {
              viewer {viewer_geo:?}"
         );
     }
+
+    #[test]
+    fn a_lock_position_hint_in_a_cropped_part_of_a_surface_stays_in_the_projection() {
+        let mut f = set_up_with(Config::default(), (1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        let window = map_window_on(&mut f, id, &steam, 1000, 300);
+        let surface = f.client(id).state.windows.last().unwrap().surface.clone();
+        // A second wide window scrolls the view so the first hangs off steam's left edge.
+        map_window_on(&mut f, id, &steam, 1000, 300);
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+        let projection = view_projection(&mut f);
+
+        let centre = window_center_on(f.niri(), &steam, &window);
+        let left = centre.x - 500.;
+        assert!(
+            left < 0. && left + 1000. > 40.,
+            "the window {left}..{} is not cropped by steam's left edge",
+            left + 1000.
+        );
+        let viewer_geo = geometry(&mut f, &viewer);
+        // A visible part of the window.
+        let visible = Point::from((20., centre.y));
+        f.niri_state()
+            .move_cursor(projection.to_viewer(visible) + viewer_geo.loc);
+        input::pointer_motion(&mut f, (0., 0.));
+        assert_eq!(
+            f.niri().pointer_contents.window.as_ref().map(|(w, _)| w),
+            Some(&window)
+        );
+
+        let locked = f.client(id).lock_pointer(&surface);
+        f.double_roundtrip(id);
+        // Surface-local x = 10 lies left of steam's edge, in the part the projection crops.
+        locked.set_cursor_position_hint(10., 60.);
+        surface.commit();
+        f.double_roundtrip(id);
+        locked.destroy();
+        f.double_roundtrip(id);
+
+        let p = pointer(&mut f);
+        let region = Rectangle::new(
+            projection.region.loc + viewer_geo.loc,
+            projection.region.size,
+        );
+        assert!(
+            region.contains(p),
+            "unlocking warped the pointer to {p:?}, outside the projection {region:?}"
+        );
+        assert!(
+            (p.x - region.loc.x).abs() < 1e-6,
+            "the cropped hint should clamp to the projection's left edge {}, got {p:?}",
+            region.loc.x
+        );
+        assert_eq!(
+            f.niri().pointer_contents.window.as_ref().map(|(w, _)| w),
+            Some(&window),
+            "the pointer should still be over the window after unlocking"
+        );
+    }
 }

@@ -3855,8 +3855,9 @@ impl Niri {
 
     /// Where the real cursor goes for `surface_local`, a position within the surface under
     /// the pointer whose focus location is `focus_location`, when that surface is shown
-    /// through a projection; clamped to the viewer. `None` when the pointer is not over a
-    /// projection.
+    /// through a projection; clamped to the part of the projection's region on the viewer, so
+    /// a hint in a cropped part of the surface cannot leave the pointer outside the projection.
+    /// `None` when the pointer is not over a projection.
     pub fn projected_surface_position(
         &self,
         focus_location: Point<f64, Logical>,
@@ -3866,17 +3867,37 @@ impl Niri {
         let hit = self.resolve_output_under(pointer)?;
         let projection = hit.projection?;
         let (viewer, _) = self.physical_output_under(pointer)?;
-        let mut viewer_geo = self.global_space.output_geometry(viewer)?;
+        let viewer_geo = self.global_space.output_geometry(viewer)?.to_f64();
 
         // contents_under() synthesizes the focus location so that pointer - focus_location is
         // the exact surface-local position at the pointer.
         let surface_origin_in_source = hit.pos_within_output - (pointer - focus_location);
-        let target = projection.to_viewer(surface_origin_in_source + surface_local)
-            + viewer_geo.loc.to_f64();
+        let target =
+            projection.to_viewer(surface_origin_in_source + surface_local) + viewer_geo.loc;
 
-        // i32 sizes are exclusive, but f64 sizes are inclusive.
-        viewer_geo.size -= (1, 1).into();
-        Some(target.constrain(viewer_geo.to_f64()))
+        let region = Rectangle::new(
+            projection.region.loc + viewer_geo.loc,
+            projection.region.size,
+        );
+        let bounds = match region.intersection(viewer_geo) {
+            Some(bounds) => bounds,
+            None => {
+                // The pointer is in the region, so it overlaps the viewer.
+                debug!(
+                    viewer = %viewer.name(),
+                    ?region,
+                    ?viewer_geo,
+                    "projection region is off its viewer, clamping the hint to the viewer"
+                );
+                viewer_geo
+            }
+        };
+        // The region and output edges are exclusive, but constrain() keeps the far edges.
+        let bounds = Rectangle::new(
+            bounds.loc,
+            Size::from(((bounds.size.w - 1.).max(0.), (bounds.size.h - 1.).max(0.))),
+        );
+        Some(target.constrain(bounds))
     }
 
     /// The output a global position physically lies on, ignoring projections, or `fallback`
