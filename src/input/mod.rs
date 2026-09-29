@@ -2594,14 +2594,7 @@ impl State {
             }
         }
 
-        if let Some(output) = self.niri.screenshot_ui.selection_output() {
-            let geom = self.niri.global_space.output_geometry(output).unwrap();
-            let point = (new_pos - geom.loc.to_f64())
-                .to_physical(output.current_scale().fractional_scale())
-                .to_i32_round::<i32>();
-
-            self.niri.screenshot_ui.pointer_motion(point, None);
-        }
+        self.screenshot_ui_pointer_motion(new_pos, None);
 
         if let Some(pos_within_output) = self.niri.mru_pos_under(new_pos) {
             self.niri.window_mru_ui.pointer_motion(pos_within_output);
@@ -2729,14 +2722,7 @@ impl State {
 
         let pointer = self.niri.seat.get_pointer().unwrap();
 
-        if let Some(output) = self.niri.screenshot_ui.selection_output() {
-            let geom = self.niri.global_space.output_geometry(output).unwrap();
-            let point = (pos - geom.loc.to_f64())
-                .to_physical(output.current_scale().fractional_scale())
-                .to_i32_round::<i32>();
-
-            self.niri.screenshot_ui.pointer_motion(point, None);
-        }
+        self.screenshot_ui_pointer_motion(pos, None);
 
         if let Some(pos_within_output) = self.niri.mru_pos_under(pos) {
             self.niri.window_mru_ui.pointer_motion(pos_within_output);
@@ -3623,14 +3609,7 @@ impl State {
             return;
         };
 
-        if let Some(output) = self.niri.screenshot_ui.selection_output() {
-            let geom = self.niri.global_space.output_geometry(output).unwrap();
-            let point = (pos - geom.loc.to_f64())
-                .to_physical(output.current_scale().fractional_scale())
-                .to_i32_round::<i32>();
-
-            self.niri.screenshot_ui.pointer_motion(point, None);
-        }
+        self.screenshot_ui_pointer_motion(pos, None);
 
         if let Some(pos_within_output) = self.niri.mru_pos_under(pos) {
             self.niri.window_mru_ui.pointer_motion(pos_within_output);
@@ -4277,6 +4256,26 @@ impl State {
         )
     }
 
+    /// Moves an ongoing screenshot UI drag to the global `pos`, relative to the selection's
+    /// output. Returns that output, or `None` when the screenshot UI is closed.
+    fn screenshot_ui_pointer_motion(
+        &mut self,
+        pos: Point<f64, Logical>,
+        slot: Option<TouchSlot>,
+    ) -> Option<Output> {
+        let output = self.niri.screenshot_ui.selection_output()?.clone();
+        let Some(geom) = self.niri.global_space.output_geometry(&output) else {
+            trace!(output = %output.name(), "screenshot UI output has no geometry in global_space");
+            return None;
+        };
+        let point = (pos - geom.loc.to_f64())
+            .to_physical(output.current_scale().fractional_scale())
+            .to_i32_round::<i32>();
+
+        self.niri.screenshot_ui.pointer_motion(point, slot);
+        Some(output)
+    }
+
     /// Starts a screenshot UI selection, or a move of the existing one when `move_existing`, at
     /// the global `pos` of a pointer, tablet tool or touch point.
     fn screenshot_ui_pointer_down(
@@ -4468,13 +4467,7 @@ impl State {
         };
         let slot = evt.slot();
 
-        if let Some(output) = self.niri.screenshot_ui.selection_output().cloned() {
-            let geom = self.niri.global_space.output_geometry(&output).unwrap();
-            let point = (pos - geom.loc.to_f64())
-                .to_physical(output.current_scale().fractional_scale())
-                .to_i32_round::<i32>();
-
-            self.niri.screenshot_ui.pointer_motion(point, Some(slot));
+        if let Some(output) = self.screenshot_ui_pointer_motion(pos, Some(slot)) {
             self.niri.queue_redraw(&output);
         }
 
