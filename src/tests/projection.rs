@@ -309,6 +309,7 @@ fn overview_columns_zoom_one_places_regions_off_screen() {
 mod fixture_tests {
     use smithay::utils::{Logical, Point};
 
+    use crate::niri::LockState;
     use crate::projection::{ProjectionKind, Viewing};
     use crate::tests::fixture::Fixture;
 
@@ -454,6 +455,44 @@ mod fixture_tests {
 
         // Region is x in [96, 1824], so x=10 is in the left letterbox bar.
         assert_eq!(f.niri().output_under(Point::from((10., 540.))), None);
+    }
+
+    #[test]
+    fn locking_the_session_stops_the_pointer_reaching_the_source() {
+        let mut f = Fixture::new();
+        f.add_output(1, (1920, 1080));
+
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some("steam".to_string()))
+            .unwrap();
+
+        let viewer = f.niri_output(1);
+        f.niri().projection_state.viewing = Some(Viewing {
+            viewer: viewer.name(),
+            source: "steam".to_string(),
+        });
+        f.niri().rebuild_projections();
+        let centre = Point::<f64, Logical>::from((960., 540.));
+        assert_ne!(f.niri().output_under(centre).unwrap().0, &viewer);
+
+        let id = f.add_client();
+        let _lock = f.client(id).lock_session();
+        f.roundtrip(id);
+        assert!(!matches!(f.niri().lock_state, LockState::Unlocked));
+
+        assert!(f.niri().projection_state.projections.is_empty());
+        let (output, local) = f.niri().output_under(centre).unwrap();
+        assert_eq!(output, &viewer);
+        assert_eq!(local, centre);
+        // Viewing is kept so the view comes back once the session unlocks.
+        assert!(f.niri().projection_state.viewing.is_some());
+
+        f.niri().unlock();
+        assert_eq!(f.niri().projection_state.projections.len(), 1);
+        assert_ne!(f.niri().output_under(centre).unwrap().0, &viewer);
     }
 }
 
