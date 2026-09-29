@@ -1124,12 +1124,14 @@ mod overview_tests {
 mod view_tests {
     use niri_config::Action;
     use niri_ipc::ViewOutputState;
+    use smithay::output::Output;
     use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
     use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
     use smithay::utils::{Logical, Point};
 
     use super::overview_tests::{map_window_on, output_named, set_up, window_center_on};
     use crate::backend::virtual_output::VirtualOutputError;
+    use crate::layout::workspace::WorkspaceId;
     use crate::projection::{ProjectionKind, Viewing};
     use crate::tests::client::LayerConfigureProps;
     use crate::tests::fixture::Fixture;
@@ -1446,6 +1448,137 @@ mod view_tests {
             Some(expected.as_str())
         );
         assert_eq!(viewing(&mut f), None);
+    }
+
+    fn open_overview(f: &mut Fixture) {
+        f.niri().layout.toggle_overview();
+        f.niri_complete_animations();
+        assert!(f.niri().layout.is_overview_open());
+    }
+
+    /// The id of the workspace at `idx` on `output`, and whether it is active.
+    fn workspace_on(f: &mut Fixture, output: &Output, idx: usize) -> (WorkspaceId, bool) {
+        let (mon, _, ws) = f
+            .niri()
+            .layout
+            .workspaces()
+            .find(|(mon, i, _)| mon.is_some_and(|m| m.output() == output) && *i == idx)
+            .unwrap();
+        (ws.id(), mon.unwrap().active_workspace_idx() == idx)
+    }
+
+    #[test]
+    fn clicking_a_source_workspace_in_the_overview_views_it() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().layout.focus_output(&viewer);
+        open_overview(&mut f);
+        // The empty workspace below the window's.
+        let (ws_id, active) = workspace_on(&mut f, &steam, 1);
+        assert!(!active);
+
+        f.niri().activate_overview_workspace(&steam, ws_id);
+        f.niri_complete_animations();
+
+        assert!(!f.niri().layout.is_overview_open());
+        assert!(workspace_on(&mut f, &steam, 1).1);
+        assert_eq!(
+            viewing(&mut f),
+            Some(Viewing {
+                viewer: viewer.name(),
+                source: "steam".to_string(),
+            })
+        );
+        assert_eq!(active_output_name(&mut f), "steam");
+    }
+
+    #[test]
+    fn clicking_a_viewer_workspace_in_the_overview_behaves_as_before() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        map_window_on(&mut f, id, &viewer, 400, 300);
+        open_overview(&mut f);
+        let (ws_id, active) = workspace_on(&mut f, &viewer, 1);
+        assert!(!active);
+
+        f.niri().activate_overview_workspace(&viewer, ws_id);
+        f.niri_complete_animations();
+
+        assert!(!f.niri().layout.is_overview_open());
+        assert!(workspace_on(&mut f, &viewer, 1).1);
+        assert_eq!(viewing(&mut f), None);
+        assert_eq!(active_output_name(&mut f), viewer.name());
+    }
+
+    #[test]
+    fn clicking_a_viewer_workspace_while_viewing_leaves_view_mode() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        map_window_on(&mut f, id, &viewer, 400, 300);
+        start(&mut f, "steam");
+        open_overview(&mut f);
+        let (ws_id, _) = workspace_on(&mut f, &viewer, 1);
+
+        f.niri().activate_overview_workspace(&viewer, ws_id);
+        f.niri_complete_animations();
+
+        assert_eq!(viewing(&mut f), None);
+        assert!(workspace_on(&mut f, &viewer, 1).1);
+        assert_eq!(active_output_name(&mut f), viewer.name());
+    }
+
+    #[test]
+    fn the_overview_during_view_mode_is_the_normal_overview() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        start(&mut f, "steam");
+
+        open_overview(&mut f);
+        let kinds: Vec<_> = f
+            .niri()
+            .projection_state
+            .projections
+            .iter()
+            .map(|p| p.kind)
+            .collect();
+        assert_eq!(kinds, vec![ProjectionKind::Overview]);
+        assert!(viewing(&mut f).is_some());
+
+        f.niri().layout.toggle_overview();
+        f.niri_complete_animations();
+        let kinds: Vec<_> = f
+            .niri()
+            .projection_state
+            .projections
+            .iter()
+            .map(|p| p.kind)
+            .collect();
+        assert_eq!(kinds, vec![ProjectionKind::View]);
+    }
+
+    #[test]
+    fn view_mode_takes_over_as_soon_as_the_overview_starts_closing() {
+        let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
+        start(&mut f, "steam");
+        open_overview(&mut f);
+
+        // Close without finishing the zoom animation.
+        f.niri().layout.toggle_overview();
+        f.niri().rebuild_projections();
+        assert!(f.niri().layout.overview_zoom() < 1.);
+
+        let kinds: Vec<_> = f
+            .niri()
+            .projection_state
+            .projections
+            .iter()
+            .map(|p| p.kind)
+            .collect();
+        assert_eq!(kinds, vec![ProjectionKind::View]);
     }
 
     #[test]

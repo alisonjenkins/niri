@@ -80,29 +80,27 @@ impl MoveGrab {
     }
 
     fn on_ungrab(&mut self, data: &mut State) {
-        let layout = &mut data.niri.layout;
         match self.gesture {
             GestureState::Recognizing => {
                 // Activate the window on release. This is most prominent in the overview where
                 // windows are not activated on click. In the overview, we also try to do a nice
                 // synchronized workspace animation.
-                if layout.is_overview_open() {
-                    let res = layout.workspaces().find_map(|(mon, ws_idx, ws)| {
+                if data.niri.layout.is_overview_open() {
+                    let res = data.niri.layout.workspaces().find_map(|(mon, _, ws)| {
                         ws.windows()
                             .any(|w| w.window == self.window)
-                            .then(|| (mon.map(|mon| mon.output().clone()), ws_idx))
+                            .then(|| (mon.map(|mon| mon.output().clone()), ws.id()))
                     });
-                    if let Some((Some(output), ws_idx)) = res {
-                        layout.focus_output(&output);
-                        layout.toggle_overview_to_workspace(ws_idx);
+                    if let Some((Some(output), ws_id)) = res {
+                        data.niri.activate_overview_workspace(&output, ws_id);
                     }
                 }
 
-                layout.activate_window(&self.window);
+                data.niri.layout.activate_window(&self.window);
             }
-            GestureState::Move => layout.interactive_move_end(&self.window),
+            GestureState::Move => data.niri.layout.interactive_move_end(&self.window),
             GestureState::ViewOffset => {
-                layout.view_offset_gesture_end(Some(false));
+                data.niri.layout.view_offset_gesture_end(Some(false));
             }
         }
 

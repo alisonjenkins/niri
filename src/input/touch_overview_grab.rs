@@ -176,11 +176,10 @@ impl TouchOverviewGrab {
     }
 
     fn on_ungrab(&mut self, state: &mut State) {
-        let layout = &mut state.niri.layout;
         match self.gesture {
             GestureState::Recognizing => {
                 // Tap to activate.
-                layout.focus_output(&self.output);
+                state.niri.layout.focus_output(&self.output);
 
                 // Activate the workspace if necessary.
                 if self.window.is_some() || self.workspace_matched_narrow {
@@ -196,32 +195,38 @@ impl TouchOverviewGrab {
                         }
                     };
 
-                    let ws_idx = if let Some((Some(mon), ws_idx, _)) =
-                        layout.workspaces().find(|(_, _, ws)| ws_matches(ws))
+                    let ws_id = if let Some((Some(mon), _, ws)) = state
+                        .niri
+                        .layout
+                        .workspaces()
+                        .find(|(_, _, ws)| ws_matches(ws))
                     {
                         // The workspace could've moved to a different output in the meantime.
-                        (*mon.output() == self.output).then_some(ws_idx)
+                        (*mon.output() == self.output).then(|| ws.id())
                     } else {
                         None
                     };
 
-                    if let Some(ws_idx) = ws_idx {
-                        layout.toggle_overview_to_workspace(ws_idx);
+                    if let Some(ws_id) = ws_id {
+                        state.niri.activate_overview_workspace(&self.output, ws_id);
                     }
                 }
 
                 if let Some(window) = self.window.as_ref() {
-                    layout.activate_window(window);
+                    state.niri.layout.activate_window(window);
                 }
             }
             GestureState::ViewOffset => {
-                layout.view_offset_gesture_end(Some(false));
+                state.niri.layout.view_offset_gesture_end(Some(false));
             }
             GestureState::WorkspaceSwitch => {
-                layout.workspace_switch_gesture_end(Some(false));
+                state.niri.layout.workspace_switch_gesture_end(Some(false));
             }
             GestureState::InteractiveMove => {
-                layout.interactive_move_end(self.window.as_ref().unwrap());
+                state
+                    .niri
+                    .layout
+                    .interactive_move_end(self.window.as_ref().unwrap());
             }
         };
 
