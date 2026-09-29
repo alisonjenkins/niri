@@ -196,6 +196,8 @@ Every virtual output that is on gets its own column in the overview, to the righ
 
 Dragging works in both directions and between any two outputs, physical or virtual: drag a window from a column onto one of the physical monitor's workspaces, or the other way round. Dropping into the gap between two workspaces in any column creates a workspace there, exactly as it does for a physical monitor. Clicking a workspace in a virtual output's column closes the overview and enters view mode on that output, with that workspace active. Clicking one of the physical monitor's own workspaces behaves as it always has.
 
+A column is drawn on a solid black fill above the monitor's own workspaces, so windows scrolled off the edge of one of those workspaces disappear under the column rather than being drawn over it; clicks there go to the column, matching what is seen.
+
 If the columns and the monitor's own workspaces do not all fit, the columns shrink to fit. The monitor's own workspaces keep their normal size and never move. A virtual output that is off has no column, and turning one on or off while the overview is open adds or removes its column without closing the overview.
 
 ## View mode
