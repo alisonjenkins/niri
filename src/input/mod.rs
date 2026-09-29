@@ -50,6 +50,7 @@ use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::scrolling::ScrollDirection;
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PointerVisibility, State};
+use crate::projection::COLUMN_WHEEL_STEP;
 use crate::ui::mru::{WindowMru, WindowMruUi};
 use crate::ui::screenshot_ui::ScreenshotUi;
 use crate::utils::spawning::{spawn, spawn_sh};
@@ -3170,6 +3171,28 @@ impl State {
 
         let is_mru_open = self.niri.window_mru_ui.is_open();
 
+        // Unmodified scrolling over an overview band scrolls only its column. A touchpad scroll
+        // that began elsewhere keeps going there until the fingers lift.
+        if should_handle_in_overview
+            && !is_mru_open
+            && !self.niri.overview_scroll_swipe_gesture.is_ongoing()
+        {
+            let unmodified =
+                self.niri.seat.get_keyboard().is_some_and(|keyboard| {
+                    modifiers_from_state(keyboard.modifier_state()).is_empty()
+                });
+            if unmodified {
+                if let Some(viewer) = self.niri.overview_band_under(pointer.current_location()) {
+                    let delta = match (source, vertical_amount_v120) {
+                        (AxisSource::Wheel, Some(v120)) => v120 / 120. * COLUMN_WHEEL_STEP,
+                        _ => event.amount(Axis::Vertical).unwrap_or(0.),
+                    };
+                    self.niri.scroll_overview_band(&viewer, delta);
+                    return;
+                }
+            }
+        }
+
         // Handle wheel scroll bindings.
         if source == AxisSource::Wheel {
             // If we have a scroll bind with current modifiers, then accumulate and don't pass to
@@ -3955,6 +3978,8 @@ impl State {
             return;
         }
 
+        self.niri.overview_band_swipe = None;
+
         if event.fingers() == 3 {
             self.niri.gesture_swipe_3f_cumulative = Some((0., 0.));
 
@@ -4022,7 +4047,19 @@ impl State {
             if cx * cx + cy * cy >= 16. * 16. {
                 self.niri.gesture_swipe_3f_cumulative = None;
 
-                if let Some(output) = self.niri.output_under_cursor() {
+                // A vertical swipe over an overview band scrolls its column instead of switching
+                // the workspaces of the output the pointer resolves to.
+                let band = if is_overview_open && cx.abs() <= cy.abs() {
+                    self.niri.seat.get_pointer().and_then(|pointer| {
+                        self.niri.overview_band_under(pointer.current_location())
+                    })
+                } else {
+                    None
+                };
+
+                if band.is_some() {
+                    self.niri.overview_band_swipe = band;
+                } else if let Some(output) = self.niri.output_under_cursor() {
                     if cx.abs() > cy.abs() {
                         let output_ws = if is_overview_open {
                             self.niri.workspace_under_cursor(true)
@@ -4048,6 +4085,11 @@ impl State {
                     }
                 }
             }
+        }
+
+        if let Some(viewer) = self.niri.overview_band_swipe.clone() {
+            self.niri.scroll_overview_band(&viewer, delta_y);
+            return;
         }
 
         let timestamp = Duration::from_micros(event.time().micros());
@@ -4108,6 +4150,10 @@ impl State {
 
     fn on_gesture_swipe_end<I: InputBackend>(&mut self, event: I::GestureSwipeEndEvent) {
         self.niri.gesture_swipe_3f_cumulative = None;
+
+        if self.niri.overview_band_swipe.take().is_some() {
+            return;
+        }
 
         let mut handled = false;
         let res = self.niri.layout.workspace_switch_gesture_end(Some(true));

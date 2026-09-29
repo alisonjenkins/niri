@@ -405,6 +405,8 @@ pub struct Niri {
     pub pointer_constraint_position_hint: Option<Point<f64, Logical>>,
     pub tablet_cursor_location: Option<Point<f64, Logical>>,
     pub gesture_swipe_3f_cumulative: Option<(f64, f64)>,
+    /// The physical monitor whose overview band column the ongoing touchpad swipe scrolls.
+    pub overview_band_swipe: Option<String>,
     pub overview_scroll_swipe_gesture: ScrollSwipeGesture,
     pub vertical_wheel_tracker: ScrollTracker,
     pub horizontal_wheel_tracker: ScrollTracker,
@@ -2842,6 +2844,7 @@ impl Niri {
             pointer_constraint_position_hint: None,
             tablet_cursor_location: None,
             gesture_swipe_3f_cumulative: None,
+            overview_band_swipe: None,
             overview_scroll_swipe_gesture: ScrollSwipeGesture::new(),
             vertical_wheel_tracker: ScrollTracker::new(120),
             horizontal_wheel_tracker: ScrollTracker::new(120),
@@ -4030,6 +4033,50 @@ impl Niri {
     /// Whether `pos` is in an overview band where no tile is, so input there does nothing.
     pub fn is_in_overview_band(&self, pos: Point<f64, Logical>) -> bool {
         self.resolve_output_under(pos).is_some_and(|hit| hit.band)
+    }
+
+    /// The physical monitor whose overview band, tiles included, is under `pos`.
+    ///
+    /// Decided by the physical output, so scrolling over a tile scrolls the column rather than
+    /// the source the tile shows.
+    pub fn overview_band_under(&self, pos: Point<f64, Logical>) -> Option<String> {
+        let (output, pos_within_output) = self.physical_output_under(pos)?;
+        let name = output.name();
+        self.projection_state
+            .bands
+            .iter()
+            .find(|band| band.viewer == name && band.rect.contains(pos_within_output))
+            .map(|band| band.viewer.clone())
+    }
+
+    /// Scrolls the column of `viewer`'s overview band by `delta` logical pixels, positive
+    /// downwards, clamped to its content. Returns whether the column moved.
+    pub fn scroll_overview_band(&mut self, viewer: &str, delta: f64) -> bool {
+        if !delta.is_finite() {
+            debug!(viewer, delta, "ignoring a non-finite overview band scroll");
+            return false;
+        }
+        let Some(band) = self
+            .projection_state
+            .bands
+            .iter_mut()
+            .find(|band| band.viewer == viewer)
+        else {
+            return false;
+        };
+        let max = (band.column.content_h - band.rect.size.h).max(0.);
+        let scroll = (band.column.scroll + delta).clamp(0., max);
+        if scroll == band.column.scroll {
+            return false;
+        }
+        band.column.scroll = scroll;
+
+        self.rebuild_projections();
+        let output = self.layout.outputs().find(|o| o.name() == viewer).cloned();
+        if let Some(output) = output {
+            self.queue_redraw(&output);
+        }
+        true
     }
 
     /// Whether a mapped surface of `layer` on `output` that takes input is under the

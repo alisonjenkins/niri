@@ -47,6 +47,10 @@ impl ScrollSwipeGesture {
         }
     }
 
+    pub fn is_ongoing(&self) -> bool {
+        self.ongoing
+    }
+
     pub fn is_vertical(&self) -> bool {
         self.vertical
     }

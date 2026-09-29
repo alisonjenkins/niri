@@ -4,9 +4,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, ButtonState, Device, DeviceCapability, Event, InputBackend, InputEvent,
-    InputTime, KeyState, Keycode, PointerButtonEvent, PointerMotionEvent, TouchDownEvent,
-    TouchEvent, TouchFrameEvent, TouchSlot, TouchUpEvent, UnusedEvent,
+    AbsolutePositionEvent, Axis, AxisRelativeDirection, AxisSource, ButtonState, Device,
+    DeviceCapability, Event, GestureBeginEvent, GestureEndEvent, GestureSwipeBeginEvent,
+    GestureSwipeEndEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, InputTime, KeyState,
+    Keycode, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchDownEvent, TouchEvent,
+    TouchFrameEvent, TouchSlot, TouchUpEvent, UnusedEvent,
 };
 use smithay::input::keyboard::FilterResult;
 use smithay::output::Output;
@@ -69,6 +71,12 @@ pub struct TestEvent {
     slot: Option<u32>,
     /// Absolute position as a fraction of the touch output's size.
     fraction: (f64, f64),
+    axis_source: Option<AxisSource>,
+    /// Scroll amounts as (horizontal, vertical).
+    axis_amount: (f64, f64),
+    /// Wheel amounts in 120ths of a detent as (horizontal, vertical); wheel events only.
+    axis_v120: Option<(f64, f64)>,
+    fingers: u32,
 }
 
 impl Event<TestInput> for TestEvent {
@@ -141,16 +149,66 @@ impl TouchDownEvent<TestInput> for TestEvent {}
 impl TouchUpEvent<TestInput> for TestEvent {}
 impl TouchFrameEvent<TestInput> for TestEvent {}
 
+fn pick(axis: Axis, (horizontal, vertical): (f64, f64)) -> f64 {
+    match axis {
+        Axis::Horizontal => horizontal,
+        Axis::Vertical => vertical,
+    }
+}
+
+impl PointerAxisEvent<TestInput> for TestEvent {
+    fn amount(&self, axis: Axis) -> Option<f64> {
+        Some(pick(axis, self.axis_amount))
+    }
+
+    fn amount_v120(&self, axis: Axis) -> Option<f64> {
+        self.axis_v120.map(|v120| pick(axis, v120))
+    }
+
+    fn source(&self) -> AxisSource {
+        self.axis_source.unwrap_or(AxisSource::Wheel)
+    }
+
+    fn relative_direction(&self, _axis: Axis) -> AxisRelativeDirection {
+        AxisRelativeDirection::Identical
+    }
+}
+
+impl GestureBeginEvent<TestInput> for TestEvent {
+    fn fingers(&self) -> u32 {
+        self.fingers
+    }
+}
+
+impl GestureEndEvent<TestInput> for TestEvent {
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
+impl GestureSwipeBeginEvent<TestInput> for TestEvent {}
+impl GestureSwipeEndEvent<TestInput> for TestEvent {}
+
+impl GestureSwipeUpdateEvent<TestInput> for TestEvent {
+    fn delta_x(&self) -> f64 {
+        self.delta.x
+    }
+
+    fn delta_y(&self) -> f64 {
+        self.delta.y
+    }
+}
+
 impl InputBackend for TestInput {
     type Device = TestDevice;
     type KeyboardKeyEvent = UnusedEvent;
-    type PointerAxisEvent = UnusedEvent;
+    type PointerAxisEvent = TestEvent;
     type PointerButtonEvent = TestEvent;
     type PointerMotionEvent = TestEvent;
     type PointerMotionAbsoluteEvent = UnusedEvent;
-    type GestureSwipeBeginEvent = UnusedEvent;
-    type GestureSwipeUpdateEvent = UnusedEvent;
-    type GestureSwipeEndEvent = UnusedEvent;
+    type GestureSwipeBeginEvent = TestEvent;
+    type GestureSwipeUpdateEvent = TestEvent;
+    type GestureSwipeEndEvent = TestEvent;
     type GesturePinchBeginEvent = UnusedEvent;
     type GesturePinchUpdateEvent = UnusedEvent;
     type GesturePinchEndEvent = UnusedEvent;
@@ -251,6 +309,44 @@ pub fn pointer_button(f: &mut Fixture, button: u32, pressed: bool) {
         ..event()
     };
     send(f, InputEvent::PointerButton { event });
+}
+
+/// Mouse wheel scrolling by `detents` (positive is down), as one event.
+pub fn wheel(f: &mut Fixture, detents: f64) {
+    let event = TestEvent {
+        axis_source: Some(AxisSource::Wheel),
+        axis_amount: (0., detents * 15.),
+        axis_v120: Some((0., detents * 120.)),
+        ..event()
+    };
+    send(f, InputEvent::PointerAxis { event });
+}
+
+/// Two-finger touchpad scrolling by each of `deltas` (positive is down), then lifting the
+/// fingers.
+pub fn touchpad_scroll(f: &mut Fixture, deltas: &[f64]) {
+    for dy in deltas.iter().copied().chain([0.]) {
+        let event = TestEvent {
+            axis_source: Some(AxisSource::Finger),
+            axis_amount: (0., dy),
+            ..event()
+        };
+        send(f, InputEvent::PointerAxis { event });
+    }
+}
+
+/// A touchpad swipe with `fingers` fingers moving by each of `deltas` in turn.
+pub fn swipe(f: &mut Fixture, fingers: u32, deltas: &[(f64, f64)]) {
+    let begin = TestEvent { fingers, ..event() };
+    send(f, InputEvent::GestureSwipeBegin { event: begin });
+    for delta in deltas {
+        let update = TestEvent {
+            delta: Point::from(*delta),
+            ..event()
+        };
+        send(f, InputEvent::GestureSwipeUpdate { event: update });
+    }
+    send(f, InputEvent::GestureSwipeEnd { event: event() });
 }
 
 /// Registers the test device, which gives the seat touch capability.
