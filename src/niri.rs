@@ -3398,6 +3398,11 @@ impl Niri {
 
     /// [`Self::start_viewing`], showing it on `input_output` when that is a physical output:
     /// the monitor a click or tap that asked for view mode happened on.
+    ///
+    /// That monitor wins over the current viewer, so a click or tap on another monitor while
+    /// already viewing moves view mode there, and the old viewer gets its own workspaces
+    /// back. An `input_output` that is virtual or no longer live falls back to
+    /// [`Self::pick_viewer`].
     fn start_viewing_on(
         &mut self,
         name: &str,
@@ -3409,13 +3414,33 @@ impl Niri {
         if !is_virtual_output(&source) {
             return Err(VirtualOutputError::NotVirtual(name.to_owned()));
         }
-        let preferred = input_output
-            .filter(|o| !is_virtual_output(o) && self.layout.outputs().any(|live| live == *o));
+        let preferred = input_output.filter(|o| {
+            let usable = !is_virtual_output(o) && self.layout.outputs().any(|live| live == *o);
+            if !usable {
+                debug!(
+                    source = name,
+                    input_output = %o.name(),
+                    reason = if is_virtual_output(o) { "virtual" } else { "gone" },
+                    "input output cannot view, picking a viewer instead"
+                );
+            }
+            usable
+        });
         let Some(viewer) = preferred.cloned().or_else(|| self.pick_viewer()) else {
             return Err(VirtualOutputError::NoViewer(name.to_owned()));
         };
 
         let viewer_name = viewer.name();
+        if let Some(previous) = &self.projection_state.viewing {
+            if previous.viewer != viewer_name {
+                debug!(
+                    source = name,
+                    from = %previous.viewer,
+                    to = %viewer_name,
+                    "view mode moves to another viewer"
+                );
+            }
+        }
         info!(viewer = %viewer_name, source = name, "started viewing output");
         self.projection_state.viewing = Some(Viewing {
             viewer: viewer_name.clone(),
