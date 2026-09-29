@@ -81,6 +81,8 @@ pub struct Monitor<W: LayoutElement> {
     pub(super) overview_open: bool,
     /// Progress of the overview zoom animation, 1 is fully in overview.
     overview_progress: Option<OverviewProgress>,
+    /// Width reserved at the right edge of the fully open overview, finite and non-negative.
+    overview_right_inset: f64,
     /// Clock for driving animations.
     pub(super) clock: Clock,
     /// Configurable properties of the layout as received from the parent layout.
@@ -342,6 +344,7 @@ impl<W: LayoutElement> Monitor<W> {
             insert_hint_render_loc: None,
             overview_open: false,
             overview_progress: None,
+            overview_right_inset: 0.,
             workspace_switch: None,
             clock,
             base_options,
@@ -1392,6 +1395,38 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
+    /// Reserves `inset` logical pixels at the right edge of the overview, which then lays out
+    /// its workspaces in the remaining width. The reservation grows with the overview progress.
+    pub fn set_overview_right_inset(&mut self, inset: f64) {
+        self.overview_right_inset = if inset.is_finite() && inset >= 0. {
+            inset
+        } else {
+            debug!(
+                "ignoring invalid overview right inset {inset} on {}",
+                self.output_name
+            );
+            0.
+        };
+    }
+
+    /// Width of the output that the overview lays its workspaces out in.
+    fn overview_area_width(&self) -> f64 {
+        let Some(progress) = &self.overview_progress else {
+            return self.view_size.w;
+        };
+        let inset = self.overview_right_inset * progress.clamped_value().clamp(0., 1.);
+        self.view_size.w - inset.min(self.view_size.w)
+    }
+
+    /// X that centres something `width` wide in the overview's area.
+    fn overview_centred_x(&self, width: f64) -> f64 {
+        (self.overview_area_width() - width) / 2.
+    }
+
+    pub(super) fn overview_cull_rect(&self) -> Rectangle<f64, Logical> {
+        Rectangle::from_size(Size::from((self.overview_area_width(), self.view_size.h)))
+    }
+
     #[cfg(test)]
     pub(super) fn overview_progress_value(&self) -> Option<f64> {
         self.overview_progress.as_ref().map(|p| p.value())
@@ -1480,7 +1515,10 @@ impl<W: LayoutElement> Monitor<W> {
         let gap = self.workspace_gap(zoom);
         let ws_height_with_gap = ws_size.h + gap;
 
-        let static_offset = (self.view_size.to_point() - ws_size.to_point()).downscale(2.);
+        let static_offset = Point::from((
+            self.overview_centred_x(ws_size.w),
+            (self.view_size.h - ws_size.h) / 2.,
+        ));
         let static_offset = static_offset
             .to_physical_precise_round(scale)
             .to_logical(scale);
@@ -1507,7 +1545,7 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         cull: bool,
     ) -> impl Iterator<Item = (&Workspace<W>, Rectangle<f64, Logical>)> {
-        let output_geo = Rectangle::from_size(self.view_size);
+        let output_geo = self.overview_cull_rect();
 
         let geo = self.workspaces_render_geo();
         zip(self.workspaces.iter(), geo)
@@ -1524,7 +1562,7 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn workspaces_with_render_geo_idx(
         &self,
     ) -> impl Iterator<Item = ((usize, &Workspace<W>), Rectangle<f64, Logical>)> {
-        let output_geo = Rectangle::from_size(self.view_size);
+        let output_geo = self.overview_cull_rect();
 
         let geo = self.workspaces_render_geo();
         zip(self.workspaces.iter().enumerate(), geo)
@@ -1536,7 +1574,7 @@ impl<W: LayoutElement> Monitor<W> {
         &mut self,
         cull: bool,
     ) -> impl Iterator<Item = (&mut Workspace<W>, Rectangle<f64, Logical>)> {
-        let output_geo = Rectangle::from_size(self.view_size);
+        let output_geo = self.overview_cull_rect();
 
         let geo = self.workspaces_render_geo();
         zip(self.workspaces.iter_mut(), geo)
@@ -1549,9 +1587,9 @@ impl<W: LayoutElement> Monitor<W> {
         pos_within_output: Point<f64, Logical>,
     ) -> Option<(&Workspace<W>, Rectangle<f64, Logical>)> {
         let (ws, geo) = self.workspaces_with_render_geo().find_map(|(ws, geo)| {
-            // Extend width to entire output.
+            // Extend width to the entire overview area.
             let loc = Point::from((0., geo.loc.y));
-            let size = Size::from((self.view_size.w, geo.size.h));
+            let size = Size::from((self.overview_area_width(), geo.size.h));
             let bounds = Rectangle::new(loc, size);
 
             bounds.contains(pos_within_output).then_some((ws, geo))
@@ -1953,6 +1991,10 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn dnd_scroll_gesture_scroll(&mut self, pos: Point<f64, Logical>, speed: f64) -> bool {
         let zoom = self.overview_zoom();
+        // Restrict the scrolling horizontally to the strip of workspaces to avoid unwanted trigger
+        // after using the hot corner or during horizontal scroll.
+        let width = self.view_size.w * zoom;
+        let x = pos.x - self.overview_centred_x(width);
 
         let Some(WorkspaceSwitch::Gesture(gesture)) = &mut self.workspace_switch else {
             return false;
@@ -1965,11 +2007,6 @@ impl<W: LayoutElement> Monitor<W> {
 
         let config = &self.options.gestures.dnd_edge_workspace_switch;
         let trigger_height = config.trigger_height;
-
-        // Restrict the scrolling horizontally to the strip of workspaces to avoid unwanted trigger
-        // after using the hot corner or during horizontal scroll.
-        let width = self.view_size.w * zoom;
-        let x = pos.x - (self.view_size.w - width) / 2.;
 
         // Consider the working area so layer-shell docks and such don't prevent scrolling.
         let y = pos.y - self.working_area.loc.y;

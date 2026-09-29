@@ -1826,6 +1826,12 @@ impl<W: LayoutElement> Layout<W> {
         self.monitors_mut().find(|mon| &mon.output == output)
     }
 
+    pub fn set_overview_right_inset(&mut self, output: &Output, inset: f64) {
+        if let Some(mon) = self.monitor_for_output_mut(output) {
+            mon.set_overview_right_inset(inset);
+        }
+    }
+
     pub fn monitor_for_workspace(&self, workspace_name: &str) -> Option<&Monitor<W>> {
         self.monitors().find(|monitor| {
             monitor.workspaces.iter().any(|ws| {

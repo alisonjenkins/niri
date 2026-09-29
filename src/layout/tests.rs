@@ -15,6 +15,7 @@ use super::*;
 
 mod animations;
 mod fullscreen;
+mod overview_hooks;
 
 impl<W: LayoutElement> Default for Layout<W> {
     fn default() -> Self {
@@ -377,6 +378,15 @@ fn arbitrary_resize_edge() -> impl Strategy<Value = ResizeEdge> {
 
 fn arbitrary_scale() -> impl Strategy<Value = f64> {
     prop_oneof![Just(1.), Just(1.5), Just(2.),]
+}
+
+fn arbitrary_overview_right_inset() -> impl Strategy<Value = f64> {
+    prop_oneof![
+        4 => 0f64..2000f64,
+        1 => Just(-1.),
+        1 => Just(f64::NAN),
+        1 => Just(f64::INFINITY),
+    ]
 }
 
 fn arbitrary_msec_delta() -> impl Strategy<Value = i32> {
@@ -749,6 +759,12 @@ enum Op {
         window: usize,
     },
     ToggleOverview,
+    SetOverviewRightInset {
+        #[proptest(strategy = "1..=5usize")]
+        id: usize,
+        #[proptest(strategy = "arbitrary_overview_right_inset()")]
+        inset: f64,
+    },
     UpdateConfig {
         #[proptest(strategy = "arbitrary_layout_part().prop_map(Box::new)")]
         layout_config: Box<niri_config::LayoutPart>,
@@ -1619,6 +1635,14 @@ impl Op {
             }
             Op::ToggleOverview => {
                 layout.toggle_overview();
+            }
+            Op::SetOverviewRightInset { id, inset } => {
+                let name = format!("output{id}");
+                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
+                    return;
+                };
+
+                layout.set_overview_right_inset(&output, inset);
             }
             Op::UpdateConfig { layout_config } => {
                 let options = Options {
