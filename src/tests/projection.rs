@@ -503,6 +503,14 @@ mod fixture_tests {
             viewer: viewer.name(),
             source: "steam".to_string(),
         });
+        // As start_viewing() does; a viewer left active would end view mode on the next refresh.
+        let steam = f
+            .niri()
+            .layout
+            .outputs()
+            .find(|o| o.name() == "steam")
+            .cloned();
+        f.niri().layout.focus_output(&steam.unwrap());
         f.niri().rebuild_projections();
         let centre = Point::<f64, Logical>::from((960., 540.));
         assert_ne!(f.niri().output_under(centre).unwrap().0, &viewer);
@@ -1207,7 +1215,7 @@ mod view_tests {
         let viewer = f.niri_output(1);
         start(&mut f, "steam");
 
-        let reply = f.niri().stop_viewing();
+        let reply = f.niri().stop_viewing("test");
 
         assert_eq!(
             reply,
@@ -1226,7 +1234,7 @@ mod view_tests {
         let mut f = set_up((1920, 1080), &[("steam", 1280, 800)]);
         let active = active_output_name(&mut f);
 
-        assert_eq!(f.niri().stop_viewing(), ViewOutputState::NotViewing);
+        assert_eq!(f.niri().stop_viewing("test"), ViewOutputState::NotViewing);
         assert_eq!(viewing(&mut f), None);
         assert_eq!(active_output_name(&mut f), active);
     }
@@ -2391,6 +2399,192 @@ mod input_tests {
             tapped.name(),
             "view mode started on the monitor under the mouse, not the one tapped"
         );
+    }
+
+    /// Moves the pointer to `target` with relative motion, the way a mouse does.
+    fn move_pointer_to(f: &mut Fixture, target: Point<f64, Logical>) {
+        let delta = target - pointer(f);
+        input::pointer_motion(f, delta);
+    }
+
+    /// What the event loop runs after dispatching each batch of events in a session.
+    fn refresh(f: &mut Fixture) {
+        f.niri_state().refresh_and_flush_clients();
+    }
+
+    fn click(f: &mut Fixture) {
+        input::pointer_button(f, input::BTN_LEFT, true);
+        refresh(f);
+        input::pointer_button(f, input::BTN_LEFT, false);
+        refresh(f);
+        f.niri_complete_animations();
+        refresh(f);
+    }
+
+    fn toggle_overview(f: &mut Fixture) {
+        f.niri_state().do_action(Action::ToggleOverview, false);
+        refresh(f);
+        f.niri_complete_animations();
+        refresh(f);
+    }
+
+    /// Where workspace `idx` of `output` is drawn on the viewer while the overview is open:
+    /// near its top edge, which stays on screen for the workspace below the active one.
+    fn overview_workspace_point(
+        f: &mut Fixture,
+        viewer: &Output,
+        output: &Output,
+        idx: usize,
+    ) -> Point<f64, Logical> {
+        let viewer_geo = geometry(f, viewer);
+        let niri = f.niri();
+        let ws = niri
+            .layout
+            .monitor_for_output(output)
+            .unwrap()
+            .workspaces_render_geo()
+            .nth(idx)
+            .unwrap();
+        let local = Point::from((center(ws).x, ws.loc.y + 40.));
+        let on_viewer = if output == viewer {
+            local
+        } else {
+            niri.projection_state
+                .projections
+                .iter()
+                .find(|p| p.kind == ProjectionKind::Overview && p.source == output.name())
+                .unwrap()
+                .to_viewer(local)
+        };
+        on_viewer + viewer_geo.loc
+    }
+
+    /// The desk set-up from the bug report: a window on the viewer and one on steam, the
+    /// viewer active, then steam's second workspace clicked in the overview.
+    fn view_steam_from_the_overview() -> (Fixture, Output, Window) {
+        view_steam_from_the_overview_with(warp_config())
+    }
+
+    fn view_steam_from_the_overview_with(config: Config) -> (Fixture, Output, Window) {
+        let mut f = set_up_with(config, (5120, 1440), &[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        map_window_on(&mut f, id, &steam, 400, 300);
+        let viewer_window = map_window_on(&mut f, id, &viewer, 400, 300);
+        f.niri().layout.focus_output(&viewer);
+        let viewer_centre = center(geometry(&mut f, &viewer));
+        f.niri_state().move_cursor(viewer_centre);
+
+        toggle_overview(&mut f);
+        let target = overview_workspace_point(&mut f, &viewer, &steam, 1);
+        move_pointer_to(&mut f, target);
+        click(&mut f);
+
+        let viewing = f.niri().projection_state.viewing.clone().unwrap();
+        assert_eq!(viewing.viewer, viewer.name());
+        assert_eq!(viewing.source, "steam");
+        assert!(!f.niri().layout.is_overview_open());
+        assert_eq!(f.niri().layout.active_output(), Some(&steam));
+        (f, viewer, viewer_window)
+    }
+
+    fn assert_back_on_the_viewer(f: &mut Fixture, viewer: &Output, ws_idx: usize) {
+        let niri = f.niri();
+        assert_eq!(niri.projection_state.viewing, None);
+        assert!(!niri.layout.is_overview_open());
+        assert_eq!(niri.layout.active_output(), Some(viewer));
+        assert_eq!(
+            niri.layout
+                .monitor_for_output(viewer)
+                .unwrap()
+                .active_workspace_idx(),
+            ws_idx
+        );
+        assert!(
+            niri.projection_state
+                .projections
+                .iter()
+                .all(|p| p.kind != ProjectionKind::View),
+            "the view projection still covers the viewer: {:?}",
+            niri.projection_state.projections
+        );
+    }
+
+    #[test]
+    fn clicking_an_empty_viewer_workspace_after_viewing_from_the_overview_returns() {
+        let (mut f, viewer, _window) = view_steam_from_the_overview();
+
+        toggle_overview(&mut f);
+        let target = overview_workspace_point(&mut f, &viewer, &viewer, 1);
+        move_pointer_to(&mut f, target);
+        click(&mut f);
+
+        assert_back_on_the_viewer(&mut f, &viewer, 1);
+    }
+
+    #[test]
+    fn clicking_a_viewer_window_after_viewing_from_the_overview_returns() {
+        let (mut f, viewer, window) = view_steam_from_the_overview();
+
+        toggle_overview(&mut f);
+        let target = window_center_on(f.niri(), &viewer, &window) + geometry(&mut f, &viewer).loc;
+        move_pointer_to(&mut f, target);
+        assert!(
+            f.niri().window_under_cursor().is_some(),
+            "the click should land on the viewer's window"
+        );
+        click(&mut f);
+
+        assert_back_on_the_viewer(&mut f, &viewer, 0);
+    }
+
+    /// The desk's overview and monitor binds; steam lies right of the viewer.
+    fn keyboard_config() -> Config {
+        let mut config = Config::parse_mem(
+            "binds {
+                Mod+O { toggle-overview; }
+                Mod+Shift+Left { focus-monitor-left; }
+            }",
+        )
+        .unwrap();
+        config.input.warp_mouse_to_focus = warp_config().input.warp_mouse_to_focus;
+        config
+    }
+
+    /// Presses `keys` in order and releases them in reverse.
+    fn press(f: &mut Fixture, keys: &[&str]) {
+        for name in keys {
+            input::key(f, name, true);
+            refresh(f);
+        }
+        for name in keys.iter().rev() {
+            input::key(f, name, false);
+            refresh(f);
+        }
+        f.niri_complete_animations();
+        refresh(f);
+    }
+
+    #[test]
+    fn picking_the_viewer_with_the_keyboard_in_the_overview_returns() {
+        let (mut f, viewer, _window) = view_steam_from_the_overview_with(keyboard_config());
+
+        press(&mut f, &["LWIN", "AD09"]);
+        assert!(f.niri().layout.is_overview_open());
+        press(&mut f, &["LWIN", "LFSH", "LEFT"]);
+        press(&mut f, &["RTRN"]);
+
+        assert_back_on_the_viewer(&mut f, &viewer, 0);
+    }
+
+    #[test]
+    fn focusing_the_viewer_in_view_mode_returns_to_it() {
+        let (mut f, viewer, _window) = view_steam_from_the_overview_with(keyboard_config());
+
+        press(&mut f, &["LWIN", "LFSH", "LEFT"]);
+
+        assert_back_on_the_viewer(&mut f, &viewer, 0);
     }
 
     fn active_view_pos(f: &mut Fixture, output: &Output) -> f64 {
