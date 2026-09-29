@@ -18,7 +18,7 @@ use niri_config::OutputName;
 use niri_ipc::state::{EventStreamState, EventStreamStatePart as _};
 use niri_ipc::{
     Action, Event, KeyboardLayouts, OutputConfigChanged, Overview, Reply, Request, Response,
-    Timestamp, WindowLayout, Workspace,
+    Timestamp, ViewOutputState, WindowLayout, Workspace,
 };
 use smithay::desktop::layer_map_for_output;
 use smithay::input::pointer::{
@@ -111,6 +111,24 @@ impl IpcServer {
             event_streams: Rc::new(RefCell::new(Vec::new())),
             event_stream_state: Rc::new(RefCell::new(EventStreamState::default())),
         })
+    }
+
+    /// Subscribes to the event stream the way an `EventStream` request does, without a socket.
+    #[cfg(test)]
+    pub fn subscribe(&self) -> Receiver<Event> {
+        // Unbounded, so a test that reads late is not disconnected as a slow client.
+        let (events_tx, events_rx) = async_channel::unbounded();
+        let (disconnect_tx, _) = async_channel::bounded(1);
+
+        for event in self.event_stream_state.borrow().replicate() {
+            let _ = events_tx.try_send(event);
+        }
+
+        self.event_streams.borrow_mut().push(EventStreamSender {
+            events: events_tx,
+            disconnect: disconnect_tx,
+        });
+        events_rx
     }
 
     fn send_event(&self, event: Event) {
@@ -876,6 +894,31 @@ impl State {
         }
 
         let event = Event::OverviewOpenedOrClosed { is_open };
+        state.apply(event.clone());
+        server.send_event(event);
+    }
+
+    pub fn ipc_refresh_view_output(&mut self) {
+        let Some(server) = &self.niri.ipc_server else {
+            return;
+        };
+
+        let mut state = server.event_stream_state.borrow_mut();
+        let state = &mut state.view_output;
+        let view_state = match &self.niri.projection_state.viewing {
+            Some(viewing) => ViewOutputState::Viewing {
+                viewer: viewing.viewer.clone(),
+                source: viewing.source.clone(),
+            },
+            None => ViewOutputState::NotViewing,
+        };
+
+        if state.state == view_state {
+            return;
+        }
+
+        debug!(?view_state, "sending view output event");
+        let event = Event::ViewOutputChanged { state: view_state };
         state.apply(event.clone());
         server.send_event(event);
     }
