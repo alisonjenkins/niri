@@ -3757,22 +3757,22 @@ mod overview_band_tests {
         f
     }
 
-    fn set_up(sources: &[(&str, u16, u16)]) -> Fixture {
+    pub(super) fn set_up(sources: &[(&str, u16, u16)]) -> Fixture {
         set_up_with(Config::default(), sources)
     }
 
-    fn refresh(f: &mut Fixture) {
+    pub(super) fn refresh(f: &mut Fixture) {
         f.niri_state().refresh_and_flush_clients();
     }
 
-    fn toggle_overview(f: &mut Fixture) {
+    pub(super) fn toggle_overview(f: &mut Fixture) {
         f.niri_state().do_action(Action::ToggleOverview, false);
         refresh(f);
         f.niri_complete_animations();
         refresh(f);
     }
 
-    fn click(f: &mut Fixture) {
+    pub(super) fn click(f: &mut Fixture) {
         input::pointer_button(f, input::BTN_LEFT, true);
         refresh(f);
         input::pointer_button(f, input::BTN_LEFT, false);
@@ -3781,17 +3781,17 @@ mod overview_band_tests {
         refresh(f);
     }
 
-    fn pointer(f: &mut Fixture) -> Point<f64, Logical> {
+    pub(super) fn pointer(f: &mut Fixture) -> Point<f64, Logical> {
         f.niri().seat.get_pointer().unwrap().current_location()
     }
 
-    fn move_pointer_to(f: &mut Fixture, target: Point<f64, Logical>) {
+    pub(super) fn move_pointer_to(f: &mut Fixture, target: Point<f64, Logical>) {
         let delta = target - pointer(f);
         input::pointer_motion(f, delta);
         refresh(f);
     }
 
-    fn viewer_size() -> Size<f64, Logical> {
+    pub(super) fn viewer_size() -> Size<f64, Logical> {
         Size::from((f64::from(VIEWER.0), f64::from(VIEWER.1)))
     }
 
@@ -4211,6 +4211,320 @@ mod overview_band_tests {
             "positive control: the keys moved down a workspace"
         );
         assert_eq!(navigate(&[("steam", 1280, 800)]), upstream);
+    }
+}
+
+/// The band's column: its order, sizes, scrolling and clicks into view mode.
+mod overview_column_tests {
+    use smithay::output::Output;
+    use smithay::utils::{Logical, Point, Rectangle};
+
+    use super::overview_band_tests::{
+        click, fill_workspaces, full_band, move_pointer_to, refresh, set_up, toggle_overview,
+    };
+    use super::overview_tests::{map_window_on, output_named, tile_for, window_center_on};
+    use crate::projection::{Band, ViewOrigin, Viewing};
+    use crate::tests::fixture::Fixture;
+    use crate::tests::input;
+
+    fn band<'a>(f: &'a mut Fixture, viewer: &Output) -> &'a Band {
+        let name = viewer.name();
+        f.niri()
+            .projection_state
+            .bands
+            .iter()
+            .find(|band| band.viewer == name)
+            .unwrap_or_else(|| panic!("no band on {name}"))
+    }
+
+    fn group_names(f: &mut Fixture, viewer: &Output) -> Vec<String> {
+        band(f, viewer)
+            .column
+            .groups
+            .iter()
+            .map(|group| group.name.clone())
+            .collect()
+    }
+
+    fn scroll(f: &mut Fixture, viewer: &Output) -> f64 {
+        band(f, viewer).column.scroll
+    }
+
+    fn max_scroll(f: &mut Fixture, viewer: &Output) -> f64 {
+        let band = band(f, viewer);
+        (band.column.content_h - band.rect.size.h).max(0.)
+    }
+
+    fn set_scroll(f: &mut Fixture, viewer: &Output, scroll: f64) {
+        let name = viewer.name();
+        let niri = f.niri();
+        for band in &mut niri.projection_state.bands {
+            if band.viewer == name {
+                band.column.scroll = scroll;
+            }
+        }
+        niri.rebuild_projections();
+    }
+
+    fn fully_in_band(region: Rectangle<f64, Logical>) -> bool {
+        let band = full_band();
+        region.intersection(band) == Some(region)
+    }
+
+    fn remove(f: &mut Fixture, name: &str) {
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .remove_virtual_output(&mut state.niri, name)
+            .unwrap();
+        refresh(f);
+    }
+
+    fn create(f: &mut Fixture, name: &str) {
+        let state = f.niri_state();
+        state
+            .backend
+            .headless()
+            .create_virtual_output(&mut state.niri, 1280, 800, 60, Some(name.to_string()))
+            .unwrap();
+        refresh(f);
+    }
+
+    #[test]
+    fn every_tile_has_the_same_width() {
+        let mut f = set_up(&[
+            ("steam", 1280, 800),
+            ("aux", 1920, 1080),
+            ("tall", 800, 1280),
+        ]);
+        let viewer = f.niri_output(1);
+        toggle_overview(&mut f);
+
+        let widths: Vec<f64> = band(&mut f, &viewer)
+            .column
+            .groups
+            .iter()
+            .flat_map(|group| group.tiles.iter().map(|tile| tile.region.size.w))
+            .collect();
+        assert_eq!(widths.len(), 3);
+        assert!(widths.iter().all(|w| *w == widths[0]), "{widths:?}");
+    }
+
+    /// steam with `a` on its first workspace and `b` on its second, the first active, and
+    /// the viewer focused, then the overview opened.
+    fn two_windows_on_steam() -> (Fixture, Output, Output, [smithay::desktop::Window; 2]) {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        let a = map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().layout.switch_workspace_down();
+        let b = map_window_on(&mut f, id, &steam, 400, 300);
+        f.niri().layout.switch_workspace(0);
+        f.niri().layout.focus_output(&viewer);
+        f.niri_complete_animations();
+        toggle_overview(&mut f);
+        (f, viewer, steam, [a, b])
+    }
+
+    fn assert_viewing_steam_from_the_overview(f: &mut Fixture, viewer: &Output, ws_idx: usize) {
+        let steam = output_named(f, "steam");
+        let niri = f.niri();
+        assert!(!niri.layout.is_overview_open());
+        assert_eq!(
+            niri.projection_state.viewing,
+            Some(Viewing {
+                viewer: viewer.name(),
+                source: "steam".to_string(),
+                origin: ViewOrigin::Overview,
+            })
+        );
+        assert_eq!(niri.layout.active_output(), Some(&steam));
+        assert_eq!(
+            niri.layout
+                .monitor_for_output(&steam)
+                .unwrap()
+                .active_workspace_idx(),
+            ws_idx
+        );
+    }
+
+    fn escape(f: &mut Fixture) {
+        input::key(f, "ESC", true);
+        refresh(f);
+        input::key(f, "ESC", false);
+        refresh(f);
+        f.niri_complete_animations();
+        refresh(f);
+    }
+
+    #[test]
+    fn clicking_a_window_in_a_tile_views_it_with_that_window_focused() {
+        let (mut f, viewer, steam, [_a, b]) = two_windows_on_steam();
+        let niri = f.niri();
+        let target = tile_for(niri, "steam", 1).to_viewer(window_center_on(niri, &steam, &b));
+
+        move_pointer_to(&mut f, target);
+        click(&mut f);
+
+        assert_viewing_steam_from_the_overview(&mut f, &viewer, 1);
+        assert_eq!(f.niri().layout.focus().map(|m| m.window.clone()), Some(b));
+
+        escape(&mut f);
+        assert_eq!(f.niri().projection_state.viewing, None);
+        assert_eq!(f.niri().layout.active_output(), Some(&viewer));
+    }
+
+    #[test]
+    fn clicking_an_empty_tile_views_it_without_focusing_a_window() {
+        let (mut f, viewer, steam, _windows) = two_windows_on_steam();
+        let niri = f.niri();
+        // The trailing empty workspace, near its top so it is on screen.
+        let ws = niri
+            .layout
+            .monitor_for_output(&steam)
+            .unwrap()
+            .workspaces_render_geo()
+            .nth(2)
+            .unwrap();
+        let local = Point::from((ws.loc.x + ws.size.w / 2., ws.loc.y + 20.));
+        let target = tile_for(niri, "steam", 2).to_viewer(local);
+
+        move_pointer_to(&mut f, target);
+        click(&mut f);
+
+        assert_viewing_steam_from_the_overview(&mut f, &viewer, 2);
+        assert_eq!(f.niri().layout.focus().map(|m| m.window.clone()), None);
+    }
+
+    #[test]
+    fn turning_outputs_on_and_off_in_the_overview_updates_the_column_and_clamps_it() {
+        let mut f = set_up(&[("aux", 1280, 800), ("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        for name in ["aux", "steam"] {
+            let output = output_named(&mut f, name);
+            fill_workspaces(&mut f, id, &output);
+        }
+        f.niri().layout.focus_output(&viewer);
+        toggle_overview(&mut f);
+        assert_eq!(group_names(&mut f, &viewer), ["aux", "steam"]);
+        set_scroll(&mut f, &viewer, f64::MAX);
+        let before = scroll(&mut f, &viewer);
+        assert!(before > 0.);
+
+        remove(&mut f, "steam");
+        assert!(f.niri().layout.is_overview_open());
+        assert_eq!(group_names(&mut f, &viewer), ["aux"]);
+        let max = max_scroll(&mut f, &viewer);
+        assert!(max < before);
+        assert_eq!(scroll(&mut f, &viewer), max);
+
+        create(&mut f, "steam");
+        assert!(f.niri().layout.is_overview_open());
+        assert_eq!(group_names(&mut f, &viewer), ["aux", "steam"]);
+        assert!(!super::overview_band_tests::tiles(&mut f, "aux").is_empty());
+    }
+
+    #[test]
+    fn opening_the_overview_shows_the_first_outputs_active_workspace() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        fill_workspaces(&mut f, id, &steam);
+        f.niri().layout.focus_output(&steam);
+        f.niri().layout.switch_workspace(3);
+        f.niri().layout.focus_output(&viewer);
+        f.niri_complete_animations();
+
+        toggle_overview(&mut f);
+        assert!(scroll(&mut f, &viewer) > 0.);
+        assert!(fully_in_band(column_tile(&mut f, &viewer, "steam", 3)));
+
+        // Scrolled away, closed and reopened: shown again.
+        set_scroll(&mut f, &viewer, 0.);
+        assert!(!fully_in_band(column_tile(&mut f, &viewer, "steam", 3)));
+        toggle_overview(&mut f);
+        toggle_overview(&mut f);
+        assert!(fully_in_band(column_tile(&mut f, &viewer, "steam", 3)));
+    }
+
+    /// Where the column lays out workspace `ws_idx` of `source`, on screen or not.
+    fn column_tile(
+        f: &mut Fixture,
+        viewer: &Output,
+        source: &str,
+        ws_idx: usize,
+    ) -> Rectangle<f64, Logical> {
+        band(f, viewer)
+            .column
+            .groups
+            .iter()
+            .find(|group| group.name == source)
+            .and_then(|group| group.tiles.get(ws_idx))
+            .map(|tile| tile.region)
+            .unwrap_or_else(|| panic!("no column tile {ws_idx} for {source}"))
+    }
+
+    #[test]
+    fn with_twelve_outputs_the_last_tile_is_reachable_by_scrolling() {
+        let names: Vec<String> = (0..12).map(|i| format!("virt-{i:02}")).collect();
+        let sources: Vec<(&str, u16, u16)> = names
+            .iter()
+            .map(|name| (name.as_str(), 1280, 800))
+            .collect();
+        let mut f = set_up(&sources);
+        let viewer = f.niri_output(1);
+        toggle_overview(&mut f);
+        let one = {
+            let mut single = set_up(&[("virt-00", 1280, 800)]);
+            toggle_overview(&mut single);
+            tile_for(single.niri(), "virt-00", 0).region.size
+        };
+
+        let last = |f: &mut Fixture| {
+            f.niri()
+                .projection_state
+                .projections
+                .iter()
+                .find(|p| p.source == "virt-11")
+                .map(|p| p.region)
+        };
+        assert_eq!(last(&mut f), None, "the last group starts off screen");
+
+        set_scroll(&mut f, &viewer, f64::MAX);
+        let region = last(&mut f).expect("the last group is reachable");
+        assert_eq!(region.size, one);
+        assert!(fully_in_band(region), "{region:?}");
+    }
+
+    #[test]
+    fn each_physical_output_has_its_own_band() {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        f.add_output(2, (5120, 1440));
+        let first = f.niri_output(1);
+        let second = f.niri_output(2);
+        toggle_overview(&mut f);
+
+        let viewers: Vec<String> = f
+            .niri()
+            .projection_state
+            .bands
+            .iter()
+            .map(|band| band.viewer.clone())
+            .collect();
+        assert_eq!(viewers, [first.name(), second.name()]);
+        for viewer in [&first, &second] {
+            let name = viewer.name();
+            assert!(f
+                .niri()
+                .projection_state
+                .projections
+                .iter()
+                .any(|p| p.viewer == name && p.source == "steam"));
+        }
     }
 }
 
