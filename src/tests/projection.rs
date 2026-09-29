@@ -2393,10 +2393,10 @@ mod input_tests {
         );
     }
 
-    fn steam_view_pos(f: &mut Fixture, steam: &Output) -> f64 {
+    fn active_view_pos(f: &mut Fixture, output: &Output) -> f64 {
         f.niri()
             .layout
-            .monitor_for_output(steam)
+            .monitor_for_output(output)
             .unwrap()
             .active_workspace_ref()
             .scrolling()
@@ -2418,7 +2418,7 @@ mod input_tests {
         let viewer_geo = geometry(&mut f, &viewer);
         f.niri_state()
             .move_cursor(center(projection.region) + viewer_geo.loc);
-        let view_pos_before = steam_view_pos(&mut f, &steam);
+        let view_pos_before = active_view_pos(&mut f, &steam);
 
         input::super_key(&mut f, true);
         input::pointer_button(&mut f, input::BTN_MIDDLE, true);
@@ -2426,7 +2426,7 @@ mod input_tests {
         for _ in 0..3 {
             input::pointer_motion(&mut f, (45., 0.));
         }
-        let scrolled = steam_view_pos(&mut f, &steam) - view_pos_before;
+        let scrolled = active_view_pos(&mut f, &steam) - view_pos_before;
         input::pointer_button(&mut f, input::BTN_MIDDLE, false);
         input::super_key(&mut f, false);
 
@@ -2618,6 +2618,114 @@ mod input_tests {
                 && (p - expected).y.abs() < 1e-6,
             "unlocking warped the pointer to {p:?}, expected the hint at {expected:?} on the \
              viewer {viewer_geo:?}"
+        );
+    }
+
+    #[test]
+    fn right_drag_in_a_shrunk_source_column_scrolls_the_source_at_projection_scale() {
+        // A 4K source next to a 1080p viewer's strip only fits shrunk.
+        let mut f = set_up_with(Config::default(), (1920, 1080), &[("steam", 3840, 2160)]);
+        let viewer = f.niri_output(1);
+        let id = f.add_client();
+        let steam = output_named(&mut f, "steam");
+        for _ in 0..3 {
+            map_window_on(&mut f, id, &steam, 3000, 1000);
+        }
+        f.niri().layout.focus_output(&viewer);
+        open_overview(&mut f);
+        let projection = overview_projection(&mut f, "steam");
+        let scale = projection.scale();
+        assert!(scale < 1., "the steam column is not shrunk: {projection:?}");
+        let zoom = f.niri().layout.overview_zoom();
+        let viewer_geo = geometry(&mut f, &viewer);
+        f.niri_state()
+            .move_cursor(center(projection.region) + viewer_geo.loc);
+        let view_pos_before = active_view_pos(&mut f, &steam);
+
+        input::pointer_button(&mut f, input::BTN_RIGHT, true);
+        for _ in 0..3 {
+            input::pointer_motion(&mut f, (10., 0.));
+        }
+        let scrolled = active_view_pos(&mut f, &steam) - view_pos_before;
+        input::pointer_button(&mut f, input::BTN_RIGHT, false);
+
+        let expected = -30. / scale / zoom;
+        assert!(
+            (scrolled - expected).abs() < 1e-6,
+            "a 30 px drag at projection scale {scale} and zoom {zoom} scrolled steam by \
+             {scrolled} px, expected {expected}"
+        );
+    }
+
+    /// Two 1920x1080 monitors side by side with no virtual outputs, and three wide windows
+    /// on the left one so its view can scroll.
+    fn set_up_unprojected() -> (Fixture, Output) {
+        let mut f = set_up_with(Config::default(), (1920, 1080), &[]);
+        f.add_output(2, (1920, 1080));
+        let left = f.niri_output(1);
+        let id = f.add_client();
+        for _ in 0..3 {
+            map_window_on(&mut f, id, &left, 1000, 300);
+        }
+        f.niri().layout.focus_output(&left);
+        f.niri_complete_animations();
+        assert!(f.niri().projection_state.projections.is_empty());
+        (f, left)
+    }
+
+    #[test]
+    fn unprojected_right_drag_in_the_overview_wraps_on_its_output_at_scale_one() {
+        let (mut f, left) = set_up_unprojected();
+        open_overview(&mut f);
+        assert!(f.niri().projection_state.projections.is_empty());
+        let zoom = f.niri().layout.overview_zoom();
+        f.niri_state().move_cursor(Point::from((1900., 540.)));
+        let view_pos_before = active_view_pos(&mut f, &left);
+
+        input::pointer_button(&mut f, input::BTN_RIGHT, true);
+        for _ in 0..3 {
+            input::pointer_motion(&mut f, (20., 0.));
+        }
+        let scrolled = active_view_pos(&mut f, &left) - view_pos_before;
+        let p = pointer(&mut f);
+        input::pointer_button(&mut f, input::BTN_RIGHT, false);
+
+        assert!(
+            (p - Point::from((40., 540.))).x.abs() < 1e-6,
+            "the pointer should have wrapped to the left monitor's left edge, is at {p:?}"
+        );
+        let expected = -60. / zoom;
+        assert!(
+            (scrolled - expected).abs() < 1e-6,
+            "a 60 px drag at zoom {zoom} scrolled by {scrolled} px, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn unprojected_mod_middle_drag_wraps_on_its_output_at_scale_one() {
+        let (mut f, left) = set_up_unprojected();
+        f.niri_state().move_cursor(Point::from((1900., 540.)));
+        let view_pos_before = active_view_pos(&mut f, &left);
+
+        input::super_key(&mut f, true);
+        input::pointer_button(&mut f, input::BTN_MIDDLE, true);
+        // Past the 8 px threshold leftwards, so the drag becomes horizontal before the wrap.
+        input::pointer_motion(&mut f, (-10., 0.));
+        for _ in 0..3 {
+            input::pointer_motion(&mut f, (20., 0.));
+        }
+        let scrolled = active_view_pos(&mut f, &left) - view_pos_before;
+        let p = pointer(&mut f);
+        input::pointer_button(&mut f, input::BTN_MIDDLE, false);
+        input::super_key(&mut f, false);
+
+        assert!(
+            (p - Point::from((30., 540.))).x.abs() < 1e-6,
+            "the pointer should have wrapped to the left monitor's left edge, is at {p:?}"
+        );
+        assert!(
+            (scrolled + 50.).abs() < 1e-6,
+            "a 50 px drag scrolled by {scrolled} px, expected -50"
         );
     }
 
