@@ -1975,12 +1975,14 @@ mod input_tests {
     use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
     use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
     use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
+    use wayland_client::protocol::wl_surface::WlSurface;
 
     use super::overview_tests::{map_window_on, output_named, window_center_on};
     use crate::input::move_grab::MoveGrab;
     use crate::input::AnyStartData;
+    use crate::layout::HitType;
     use crate::projection::{Projection, ProjectionKind};
-    use crate::tests::client::LayerConfigureProps;
+    use crate::tests::client::{ClientId, LayerConfigureProps};
     use crate::tests::fixture::Fixture;
     use crate::tests::input;
 
@@ -2344,5 +2346,72 @@ mod input_tests {
             contents.output.as_ref().map(|o| o.name())
         );
         assert_eq!(contents.output.as_ref(), Some(&viewer));
+    }
+
+    /// View mode on a 1920x1080 viewer showing steam at scale 1.35, a 400x300 window on
+    /// steam, and the pointer over it at `surface_local`. Returns the window's client surface
+    /// and a mapping from surface-local positions to global pointer positions.
+    fn view_window_under_pointer(
+        f: &mut Fixture,
+        id: ClientId,
+        surface_local: Point<f64, Logical>,
+    ) -> (
+        WlSurface,
+        impl Fn(Point<f64, Logical>) -> Point<f64, Logical>,
+    ) {
+        let viewer = f.niri_output(1);
+        let steam = output_named(f, "steam");
+        let window = map_window_on(f, id, &steam, 400, 300);
+        let surface = f.client(id).state.windows.last().unwrap().surface.clone();
+        f.niri().start_viewing("steam").unwrap();
+        f.niri_complete_animations();
+
+        let projection = view_projection(f);
+        assert!((projection.scale() - 1.35).abs() < 1e-9, "{projection:?}");
+        let centre = window_center_on(f.niri(), &steam, &window);
+        let Some((_, HitType::Input { win_pos })) = f.niri().layout.window_under(&steam, centre)
+        else {
+            panic!("no input hit on the steam window");
+        };
+        let viewer_loc = geometry(f, &viewer).loc;
+        let to_global =
+            move |local: Point<f64, Logical>| projection.to_viewer(win_pos + local) + viewer_loc;
+
+        f.niri_state().move_cursor(to_global(surface_local));
+        // A real motion gives the surface pointer focus.
+        input::pointer_motion(f, (0., 0.));
+        assert_eq!(
+            f.niri().pointer_contents.window.as_ref().map(|(w, _)| w),
+            Some(&window)
+        );
+        (surface, to_global)
+    }
+
+    #[test]
+    fn a_confine_region_is_checked_in_surface_pixels_under_projection_scale() {
+        let mut f = set_up_with(Config::default(), (1920, 1080), &[("steam", 1280, 800)]);
+        let id = f.add_client();
+        let (surface, to_global) = view_window_under_pointer(&mut f, id, Point::from((150., 150.)));
+        let _confined = f.client(id).confine_pointer(&surface, (0, 0, 200, 300));
+        f.double_roundtrip(id);
+        let start = pointer(&mut f);
+
+        // 60 viewer pixels are 44.4 surface pixels: x = 194.4 stays inside the region.
+        input::pointer_motion(&mut f, (60., 0.));
+        let inside = pointer(&mut f);
+        assert!(
+            (inside - (start + Point::from((60., 0.)))).x.abs() < 1e-6,
+            "the pointer was stopped at {inside:?} inside the confine region (from {start:?})"
+        );
+        assert!(
+            (inside - to_global(Point::from((150. + 60. / 1.35, 150.))))
+                .x
+                .abs()
+                < 1e-6
+        );
+
+        // Positive control: another 60 (x = 238.9) would leave it, and is prevented.
+        input::pointer_motion(&mut f, (60., 0.));
+        assert_eq!(pointer(&mut f), inside, "the confinement is not active");
     }
 }
