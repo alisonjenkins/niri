@@ -3563,7 +3563,9 @@ mod workspace_overview_render_tests {
                 };
                 match draw {
                     Draw::Workspace(idx) => {
-                        mon.render_workspace_overview(idx, ctx, true, &mut push)
+                        let mut ctx = ctx;
+                        mon.render_workspace_overview_windows(idx, ctx.r(), true, &mut push);
+                        mon.render_workspace_overview_background(idx, ctx.renderer, &mut push);
                     }
                     Draw::Workspaces => mon.render_workspaces(ctx, true, &mut push),
                     Draw::Shadows => mon.render_workspace_shadows(ctx.renderer, &mut push),
@@ -3682,18 +3684,62 @@ mod workspace_overview_render_tests {
 /// overview is open, driven through the real input handlers.
 mod overview_band_tests {
     use niri_config::{Action, Config};
-    use smithay::desktop::Window;
+    use smithay::desktop::{layer_map_for_output, Window};
     use smithay::output::Output;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
+    use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
     use smithay::utils::{Logical, Point, Rectangle, Size};
 
     use super::overview_tests::{map_window_on, output_named};
     use crate::niri::LockState;
     use crate::projection::{band_rect, Projection, ProjectionKind, BAND_FRACTION};
-    use crate::tests::client::ClientId;
+    use crate::tests::client::{ClientId, LayerConfigureProps};
     use crate::tests::fixture::Fixture;
     use crate::tests::input;
 
     const VIEWER: (u16, u16) = (5120, 1440);
+
+    /// Maps a `w`x`h` layer-shell surface on `output` anchored to `anchor`, and returns the
+    /// compositor's side of it.
+    pub(super) fn map_layer_on(
+        f: &mut Fixture,
+        id: ClientId,
+        output: &Output,
+        layer: Layer,
+        anchor: Anchor,
+        (w, h): (u16, u16),
+        namespace: &str,
+    ) -> WlSurface {
+        // A new client learns output names only after a roundtrip.
+        f.roundtrip(id);
+        let wl_output = f.client(id).output(&output.name());
+        let client_layer = f
+            .client(id)
+            .create_layer(Some(&wl_output), layer, namespace);
+        let surface = client_layer.surface.clone();
+        client_layer.set_configure_props(LayerConfigureProps {
+            anchor: Some(anchor),
+            size: Some((u32::from(w), u32::from(h))),
+            ..Default::default()
+        });
+        client_layer.commit();
+        f.roundtrip(id);
+        let client_layer = f.client(id).layer(&surface);
+        client_layer.attach_new_buffer();
+        client_layer.set_size(w, h);
+        client_layer.ack_last_and_commit();
+        f.double_roundtrip(id);
+
+        let map = layer_map_for_output(output);
+        let surface = map
+            .layers()
+            .find(|l| l.namespace() == namespace)
+            .unwrap_or_else(|| panic!("{namespace} is not mapped on {}", output.name()))
+            .wl_surface()
+            .clone();
+        surface
+    }
 
     pub(super) fn set_up_with(config: Config, sources: &[(&str, u16, u16)]) -> Fixture {
         let mut f = Fixture::with_config(config);
@@ -4170,11 +4216,13 @@ mod overview_band_tests {
 mod overview_column_tests {
     use niri_config::Config;
     use smithay::output::Output;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
     use smithay::utils::{Logical, Point, Rectangle};
 
     use super::overview_band_tests::{
-        click, fill_workspaces, full_band, move_pointer_to, refresh, set_up, set_up_with,
-        toggle_overview,
+        click, fill_workspaces, full_band, map_layer_on, move_pointer_to, refresh, set_up,
+        set_up_with, toggle_overview,
     };
     use super::overview_tests::{map_window_on, output_named, tile_for, window_center_on};
     use crate::projection::{Band, ViewOrigin, Viewing};
@@ -4380,6 +4428,39 @@ mod overview_column_tests {
 
         assert_viewing_steam_from_the_overview(&mut f, &viewer, 2);
         assert_eq!(f.niri().layout.focus().map(|m| m.window.clone()), None);
+    }
+
+    /// Layer surfaces drawn in a tile are display-only: a top-layer surface covering the
+    /// whole source does not take a click meant for a window in the tile.
+    #[test]
+    fn clicking_a_window_in_a_tile_under_a_top_layer_surface_focuses_the_window() {
+        let (mut f, viewer, steam, [a, _b]) = two_windows_on_steam();
+        let id = f.add_client();
+        map_layer_on(
+            &mut f,
+            id,
+            &steam,
+            Layer::Top,
+            Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right,
+            (1280, 800),
+            "cover",
+        );
+        refresh(&mut f);
+        let niri = f.niri();
+        let target = tile_for(niri, "steam", 0).to_viewer(window_center_on(niri, &steam, &a));
+
+        let contents = f.niri().contents_under(target);
+        assert!(
+            contents.layer.is_none(),
+            "a tile's layer surface took the hit"
+        );
+        assert_eq!(contents.window.map(|(w, _)| w), Some(a.clone()));
+
+        move_pointer_to(&mut f, target);
+        click(&mut f);
+
+        assert_viewing_steam_from_the_overview(&mut f, &viewer, 0);
+        assert_eq!(f.niri().layout.focus().map(|m| m.window.clone()), Some(a));
     }
 
     #[test]
@@ -5236,15 +5317,18 @@ mod overview_band_render_tests {
     use smithay::backend::renderer::element::{Element as _, Id};
     use smithay::backend::renderer::gles::GlesRenderer;
     use smithay::output::Output;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor;
     use smithay::utils::{Logical, Physical, Rectangle, Scale, Size};
 
-    use super::overview_band_tests::{fill_workspaces, full_band, tiles};
+    use super::overview_band_tests::{fill_workspaces, full_band, map_layer_on, tiles};
     use super::overview_drag_tests::{in_tile, press_and_move, release};
     use super::overview_tests::{map_window_on, output_named, window_center_on};
     use crate::niri::OutputRenderElements;
     use crate::projection::{Projection, ProjectionKind};
     use crate::render_helpers::solid_color::SolidColorBuffer;
     use crate::render_helpers::{RenderCtx, RenderTarget};
+    use crate::tests::client::ClientId;
     use crate::tests::fixture::Fixture;
 
     fn set_up(sources: &[(&str, u16, u16)]) -> Fixture {
@@ -5613,6 +5697,7 @@ mod overview_band_render_tests {
         let steam = output_named(&mut f, "steam");
         let id = f.add_client();
         fill_workspaces(&mut f, id, &steam);
+        map_wallpaper_and_bar(&mut f, id, &steam);
         f.niri().layout.focus_output(&viewer);
         open_overview(&mut f);
         let scale = Scale::from(SCALE);
@@ -5643,6 +5728,206 @@ mod overview_band_render_tests {
         );
         for elem in &with_band {
             assert!(without.contains(elem), "{elem:?} only drawn with the band");
+        }
+    }
+
+    const BAR_H: u16 = 30;
+
+    /// A full-screen background-layer wallpaper and a top-layer bar along the top of
+    /// `output`, returning their element ids.
+    fn map_wallpaper_and_bar(f: &mut Fixture, id: ClientId, output: &Output) -> (Id, Id) {
+        let size = output.current_mode().unwrap().size;
+        let (w, h) = (
+            u16::try_from(size.w).unwrap(),
+            u16::try_from(size.h).unwrap(),
+        );
+        let wallpaper = map_layer_on(
+            f,
+            id,
+            output,
+            Layer::Background,
+            Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right,
+            (w, h),
+            "wallpaper",
+        );
+        let bar = map_layer_on(
+            f,
+            id,
+            output,
+            Layer::Top,
+            Anchor::Top | Anchor::Left | Anchor::Right,
+            (w, BAR_H),
+            "bar",
+        );
+        (
+            Id::from_wayland_resource(&wallpaper),
+            Id::from_wayland_resource(&bar),
+        )
+    }
+
+    /// steam with a window on each of its first three workspaces, a wallpaper and a bar,
+    /// and the overview open on the focused viewer. Returns the wallpaper's and bar's ids.
+    fn steam_with_wallpaper_and_bar() -> (Fixture, Output, Output, Id, Id) {
+        let mut f = set_up(&[("steam", 1280, 800)]);
+        let viewer = f.niri_output(1);
+        let steam = output_named(&mut f, "steam");
+        let id = f.add_client();
+        fill_workspaces(&mut f, id, &steam);
+        let (wallpaper, bar) = map_wallpaper_and_bar(&mut f, id, &steam);
+        f.niri().layout.focus_output(&viewer);
+        open_overview(&mut f);
+        (f, viewer, steam, wallpaper, bar)
+    }
+
+    /// Index in the frame and geometry of each projected element with `id`.
+    fn projected_with_id(
+        elements: &[OutputRenderElements<GlesRenderer>],
+        id: &Id,
+    ) -> Vec<(usize, Rectangle<i32, Physical>)> {
+        elements
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, OutputRenderElements::Projected(_)) && e.id() == id)
+            .map(|(i, e)| (i, e.geometry(Scale::from(SCALE))))
+            .collect()
+    }
+
+    /// The element ids of the windows and the background of the workspace `tile` shows.
+    fn workspace_ids(f: &mut Fixture, steam: &Output, tile: &Projection) -> (Vec<Id>, Id) {
+        let mon = f.niri().layout.monitor_for_output(steam).unwrap();
+        let (ws, _) = mon
+            .workspaces_with_render_geo_cull(false)
+            .find(|(ws, _)| tile.kind == ProjectionKind::Tile { workspace: ws.id() })
+            .unwrap();
+        let windows = ws
+            .windows()
+            .filter_map(|mapped| mapped.window.toplevel())
+            .map(|toplevel| Id::from_wayland_resource(toplevel.wl_surface()))
+            .collect();
+        (windows, ws.render_background().id().clone())
+    }
+
+    /// The draw of `draws` inside `visible`, if any, checking there is at most one and that
+    /// it is cropped to `visible`.
+    #[track_caller]
+    fn maybe_in(
+        draws: &[(usize, Rectangle<i32, Physical>)],
+        visible: Rectangle<i32, Physical>,
+    ) -> Option<(usize, Rectangle<i32, Physical>)> {
+        let inside: Vec<_> = draws
+            .iter()
+            .filter(|(_, geo)| geo.overlaps(visible))
+            .copied()
+            .collect();
+        assert!(inside.len() <= 1, "{inside:?} in the tile {visible:?}");
+        let (idx, geo) = *inside.first()?;
+        assert!(
+            visible.contains_rect(geo),
+            "{geo:?} is not cropped to the tile {visible:?}"
+        );
+        Some((idx, geo))
+    }
+
+    #[track_caller]
+    fn one_in(
+        draws: &[(usize, Rectangle<i32, Physical>)],
+        visible: Rectangle<i32, Physical>,
+    ) -> (usize, Rectangle<i32, Physical>) {
+        maybe_in(draws, visible)
+            .unwrap_or_else(|| panic!("nothing of {draws:?} in the tile {visible:?}"))
+    }
+
+    #[test]
+    fn egl_a_background_layer_is_drawn_in_each_tile_below_its_windows() {
+        let (mut f, viewer, steam, wallpaper, _bar) = steam_with_wallpaper_and_bar();
+        let tiles = visible_tiles(&mut f);
+        assert!(tiles.len() > 1);
+
+        let elements = render(&mut f, &viewer);
+        let draws = projected_with_id(&elements, &wallpaper);
+        assert_eq!(draws.len(), tiles.len(), "one wallpaper per visible tile");
+
+        let mut with_windows = 0;
+        for (tile, visible) in &tiles {
+            let (idx, geo) = one_in(&draws, *visible);
+            // The wallpaper fills the whole workspace, so it fills the tile's visible part.
+            assert!(
+                (geo.loc - visible.loc).x.abs() <= 1
+                    && (geo.loc - visible.loc).y.abs() <= 1
+                    && (geo.size.w - visible.size.w).abs() <= 1
+                    && (geo.size.h - visible.size.h).abs() <= 1,
+                "wallpaper {geo:?} does not fill the tile {visible:?}"
+            );
+
+            let (windows, background) = workspace_ids(&mut f, &steam, tile);
+            let (background_idx, _) = one_in(&projected_with_id(&elements, &background), *visible);
+            assert!(
+                idx < background_idx,
+                "the wallpaper is under the workspace background"
+            );
+            for window in &windows {
+                // A window can be cropped out of a partly visible tile.
+                let Some((window_idx, _)) =
+                    maybe_in(&projected_with_id(&elements, window), *visible)
+                else {
+                    continue;
+                };
+                assert!(window_idx < idx, "a window is under the wallpaper");
+                with_windows += 1;
+            }
+        }
+        assert!(with_windows > 0, "positive control: no tile had a window");
+    }
+
+    #[test]
+    fn egl_a_top_layer_is_drawn_in_each_tile_above_its_windows() {
+        let (mut f, viewer, steam, _wallpaper, bar) = steam_with_wallpaper_and_bar();
+        let tiles = visible_tiles(&mut f);
+
+        let elements = render(&mut f, &viewer);
+        let draws = projected_with_id(&elements, &bar);
+        let (first, first_visible) = &tiles
+            .iter()
+            .min_by(|a, b| a.0.region.loc.y.total_cmp(&b.0.region.loc.y))
+            .unwrap();
+        assert_eq!(first_visible.size, physical(first.region).size);
+
+        let mut with_windows = 0;
+        for (tile, visible) in &tiles {
+            if tile.region == first.region {
+                // A fully visible tile shows the bar along its top, scaled with the tile.
+                let (_, geo) = one_in(&draws, *visible);
+                let bar_h = f64::from(BAR_H) * f64::from(visible.size.w) / 1280.;
+                assert!(
+                    (geo.loc.y - visible.loc.y).abs() <= 1,
+                    "{geo:?} in {visible:?}"
+                );
+                assert!(
+                    (f64::from(geo.size.h) - bar_h).abs() <= 1.,
+                    "{geo:?} is not {bar_h} high"
+                );
+            }
+            // The bar is cropped out of a tile whose top is off the band.
+            let Some((idx, _)) = maybe_in(&draws, *visible) else {
+                continue;
+            };
+            let (windows, _) = workspace_ids(&mut f, &steam, tile);
+            for window in &windows {
+                let Some((window_idx, _)) =
+                    maybe_in(&projected_with_id(&elements, window), *visible)
+                else {
+                    continue;
+                };
+                assert!(idx < window_idx, "the bar is under a window");
+                with_windows += 1;
+            }
+        }
+        assert!(with_windows > 0, "positive control: no tile had a window");
+        for (_, geo) in &draws {
+            assert!(
+                tiles.iter().any(|(_, visible)| visible.contains_rect(*geo)),
+                "bar {geo:?} is outside every tile"
+            );
         }
     }
 }

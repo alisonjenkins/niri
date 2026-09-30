@@ -622,6 +622,15 @@ struct OutputUnder<'a> {
     band: bool,
 }
 
+impl OutputUnder<'_> {
+    /// Whether the position is on an overview band tile, which draws the source's layer
+    /// surfaces for display only, so they take no input there.
+    fn in_tile(&self) -> bool {
+        self.projection
+            .is_some_and(|p| matches!(p.kind, ProjectionKind::Tile { .. }))
+    }
+}
+
 #[derive(Debug, Default)]
 pub enum LockState {
     #[default]
@@ -4475,6 +4484,7 @@ impl Niri {
     fn is_sticky_obscured_under(&self, hit: &OutputUnder, pos: Point<f64, Logical>) -> bool {
         let output = hit.output;
         let pos_within_output = hit.pos_within_output;
+        let in_tile = hit.in_tile();
 
         // The ordering here must be consistent with the ordering in render() so that input is
         // consistent with the visuals.
@@ -4482,6 +4492,9 @@ impl Niri {
         // Check if some layer-shell surface is on top.
         let layers = layer_map_for_output(output);
         let layer_surface_under = |layer, popup| {
+            if in_tile {
+                return false;
+            }
             layers
                 .layers_on(layer)
                 .rev()
@@ -4670,6 +4683,7 @@ impl Niri {
             return rv;
         };
         let in_hot_corner = self.is_hit_in_hot_corner(&hit, pos);
+        let in_tile = hit.in_tile();
         let OutputUnder {
             output,
             pos_within_output,
@@ -4727,6 +4741,9 @@ impl Niri {
 
         let layers = layer_map_for_output(output);
         let layer_surface_under = |layer, popup| {
+            if in_tile {
+                return None;
+            }
             layers
                 .layers_on(layer)
                 .rev()
@@ -6075,7 +6092,7 @@ impl Niri {
     /// into the tile and cropped to the tile's part of the band.
     fn render_tile<R: NiriRenderer>(
         &self,
-        ctx: RenderCtx<R>,
+        mut ctx: RenderCtx<R>,
         projection: &Projection,
         workspace: WorkspaceId,
         band: &Band,
@@ -6094,9 +6111,10 @@ impl Niri {
         let Some(mon) = self.layout.monitor_for_output(source) else {
             return;
         };
-        let Some(ws_idx) = mon
+        let Some((ws_idx, (ws, geo))) = mon
             .workspaces_with_render_geo_cull(false)
-            .position(|(ws, _)| ws.id() == workspace)
+            .enumerate()
+            .find(|(_, (ws, _))| ws.id() == workspace)
         else {
             debug!(
                 source = %projection.source,
@@ -6112,9 +6130,9 @@ impl Niri {
         let source_scale = source.current_scale().fractional_scale();
         let focus_ring = !self.layout.interactive_move_is_moving_above_output(source);
 
-        mon.render_workspace_overview(ws_idx, ctx, focus_ring, &mut |elem| {
+        let push = &mut |elem: OutputRenderElements<R>| {
             let elem = ProjectedElement::new(
-                OutputRenderElements::from(elem),
+                elem,
                 source_scale,
                 projection.source_rect,
                 viewer_scale,
@@ -6123,6 +6141,57 @@ impl Niri {
             if let Some(elem) = CropRenderElement::from_element(elem, viewer_scale, crop) {
                 push(OutputRenderElements::Projected(elem));
             }
+        };
+
+        // The tile shows the workspace as the source shows it outside the overview, so every
+        // layer goes into the workspace the way render_inner() puts the background and bottom
+        // layers there in the overview: the full output scaled into the workspace's rect.
+        // Surfaces placed within the backdrop stay out, as the workspace covers the backdrop.
+        let layer_map = layer_map_for_output(source);
+        let source_scale = Scale::from(source_scale);
+        let zoom = mon.overview_zoom();
+        let ns = Some(ws.id().get() as usize);
+        let xray_pos = XrayPos::new(geo.loc, zoom);
+        macro_rules! push_layer {
+            ($render:ident, $layer:expr) => {{
+                self.$render(
+                    ctx.r(),
+                    ns,
+                    &layer_map,
+                    $layer,
+                    xray_pos,
+                    false,
+                    &mut |elem| {
+                        if let Some(elem) = scale_relocate_crop(elem, source_scale, zoom, geo) {
+                            push(elem.into());
+                        }
+                    },
+                );
+            }};
+        }
+
+        // Same stacking as render_inner() for a stationary monitor.
+        push_layer!(render_layer_popups, Layer::Overlay);
+        push_layer!(render_layer_normal, Layer::Overlay);
+        let above_top_layer = ws.render_above_top_layer();
+        if above_top_layer {
+            mon.render_workspace_overview_windows(ws_idx, ctx.r(), focus_ring, &mut |elem| {
+                push(elem.into())
+            });
+        }
+        push_layer!(render_layer_popups, Layer::Top);
+        push_layer!(render_layer_normal, Layer::Top);
+        push_layer!(render_layer_popups, Layer::Bottom);
+        push_layer!(render_layer_popups, Layer::Background);
+        if !above_top_layer {
+            mon.render_workspace_overview_windows(ws_idx, ctx.r(), focus_ring, &mut |elem| {
+                push(elem.into())
+            });
+        }
+        push_layer!(render_layer_normal, Layer::Bottom);
+        push_layer!(render_layer_normal, Layer::Background);
+        mon.render_workspace_overview_background(ws_idx, ctx.renderer, &mut |elem| {
+            push(elem.into())
         });
     }
 

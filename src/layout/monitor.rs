@@ -1802,9 +1802,12 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
-    /// Renders one workspace as the overview draws it, including its background and shadow,
-    /// wherever it is relative to the output.
-    pub fn render_workspace_overview<R: NiriRenderer>(
+    /// Renders the windows of one workspace as the overview draws them, wherever the workspace
+    /// is relative to the output.
+    ///
+    /// Split from [`Self::render_workspace_overview_background`] so that a caller can put the
+    /// background and bottom layer-shell surfaces between the two, as the overview does.
+    pub fn render_workspace_overview_windows<R: NiriRenderer>(
         &self,
         ws_idx: usize,
         mut ctx: RenderCtx<R>,
@@ -1818,13 +1821,26 @@ impl<W: LayoutElement> Monitor<W> {
         for pass in 0..4 {
             self.render_workspace_pass(ctx.r(), ws, geo, pass, focus_ring, push);
         }
+    }
+
+    /// Renders the background and shadow of one workspace as the overview draws them,
+    /// wherever the workspace is relative to the output.
+    pub fn render_workspace_overview_background<R: NiriRenderer>(
+        &self,
+        ws_idx: usize,
+        renderer: &mut R,
+        push: &mut dyn FnMut(MonitorRenderElement<R>),
+    ) {
+        let Some((ws, geo)) = self.workspaces_with_render_geo_cull(false).nth(ws_idx) else {
+            return;
+        };
 
         let scale = self.scale.fractional_scale();
         let zoom = self.overview_zoom();
         let background = MonitorInnerRenderElement::SolidColor(ws.render_background());
         push(scale_relocate(background, zoom, scale, geo));
 
-        self.render_workspace_shadow(ctx.renderer, ws, geo, push);
+        self.render_workspace_shadow(renderer, ws, geo, push);
     }
 
     /// Renders one of the `render_workspaces` passes for a single workspace at `geo`.
