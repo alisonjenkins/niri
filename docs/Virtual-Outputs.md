@@ -280,6 +280,26 @@ Showing a virtual output in the overview or in view mode never changes what the 
 
 The desk user's cursor stays on the physical monitor and is not drawn on the virtual output or into its stream. niri draws the pointer on a virtual output only while the pointer is physically over it, which is where a streaming client's own input puts it, so that client still sees its cursor.
 
+### Drawing the cursor into a stream that hides it
+
+A screencast client chooses whether the cursor is hidden, embedded in the frames, or sent as metadata. Steam asks for it hidden, because a Remote Play client draws its own cursor. SteamVR's desktop view shows Steam's frames as they are, so a flat game streamed into a headset showed no cursor.
+
+`embed-screencast-cursor` draws the pointer into casts of the output that asked for it hidden. It changes nothing for embedded or metadata casts, or for window casts.
+
+```kdl
+output "steam" {
+    virtual-output
+    embed-screencast-cursor
+}
+```
+
+It can also be switched while running, which is how a stream watcher turns it on only for a VR session. A config reload resets it to the config's value:
+
+```sh
+niri msg output steam screencast-cursor on
+niri msg output steam screencast-cursor off
+```
+
 ## Security and limitations
 
 Nothing is projected while the session is locked. A locked session would otherwise let its pointer and pixels reach another output through the projection; projections come back after unlocking, and a `view-output` in progress at lock time picks up again once the session unlocks.
