@@ -1215,7 +1215,9 @@ impl Cast {
         cursor_data: &CursorData<CastRenderElement<GlesRenderer>>,
         size: Size<i32, Physical>,
         scale: Scale<f64>,
+        embed_cursor: bool,
     ) -> bool {
+        let cursor_mode = effective_cursor_mode(self.cursor_mode, embed_cursor);
         let mut inner = self.inner.borrow_mut();
 
         let CastState::Ready {
@@ -1256,12 +1258,12 @@ impl Cast {
 
         // For embedded cursor, pass the full slice (cursor + main) to the damage tracker.
         // For metadata or hidden cursor, pass only the main elements.
-        if self.cursor_mode == CursorMode::Metadata || self.cursor_mode == CursorMode::Hidden {
+        if cursor_mode == CursorMode::Metadata || cursor_mode == CursorMode::Hidden {
             elements = &elements[cursor_data.elem_count..];
         }
         let (damage, states) = damage_tracker.damage_output(1, elements).unwrap();
 
-        if self.cursor_mode == CursorMode::Metadata {
+        if cursor_mode == CursorMode::Metadata {
             let (damage, _states) = cursor_damage_tracker
                 .damage_output(1, &cursor_data.relocated)
                 .unwrap();
@@ -1299,7 +1301,7 @@ impl Cast {
         unsafe {
             let spa_buffer = (*buffer).buffer;
 
-            if self.cursor_mode == CursorMode::Metadata {
+            if cursor_mode == CursorMode::Metadata {
                 add_cursor_metadata(renderer, spa_buffer, cursor_data, redraw_cursor);
             }
 
@@ -1937,6 +1939,16 @@ fn clear_shmbuf(buffer: &Shmbuf) {
     buffer.mapping.clear();
 }
 
+/// The cursor mode to render with, given what the client asked for and whether the output
+/// draws its pointer into casts regardless (`embed-screencast-cursor`).
+fn effective_cursor_mode(requested: CursorMode, embed_cursor: bool) -> CursorMode {
+    if embed_cursor && requested == CursorMode::Hidden {
+        CursorMode::Embedded
+    } else {
+        requested
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1949,5 +1961,17 @@ mod tests {
 
         assert!(ShmLayout::new(Size::from((536_870_912, 1))).is_err());
         assert!(ShmLayout::new(Size::from((500_000_000, 3))).is_err());
+    }
+
+    #[test]
+    fn embedding_overrides_only_a_hidden_cursor() {
+        use CursorMode::*;
+        assert_eq!(effective_cursor_mode(Hidden, true), Embedded);
+        // Metadata already hands the client the cursor to draw itself.
+        assert_eq!(effective_cursor_mode(Metadata, true), Metadata);
+        assert_eq!(effective_cursor_mode(Embedded, true), Embedded);
+        for mode in [Hidden, Embedded, Metadata] {
+            assert_eq!(effective_cursor_mode(mode, false), mode);
+        }
     }
 }

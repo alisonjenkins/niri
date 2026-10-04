@@ -1132,6 +1132,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_embed_screencast_cursor() {
+        let parsed = do_parse(
+            r##"
+            output "steam" {
+                embed-screencast-cursor
+            }
+
+            output "DP-2" {
+            }
+            "##,
+        );
+
+        let find = |name: &str| parsed.outputs.0.iter().find(|o| o.name == name).unwrap();
+        assert!(find("steam").embed_screencast_cursor);
+        assert!(!find("DP-2").embed_screencast_cursor);
+    }
+
+    #[test]
     fn parse_view_output_bind() {
         let parsed = do_parse(
             r#"
@@ -1718,6 +1736,7 @@ mod tests {
                             },
                         ),
                         virtual_output: false,
+                        embed_screencast_cursor: false,
                         modeline: None,
                         variable_refresh_rate: Some(
                             Vrr {
@@ -1765,6 +1784,7 @@ mod tests {
                             },
                         ),
                         virtual_output: false,
+                        embed_screencast_cursor: false,
                         modeline: None,
                         variable_refresh_rate: None,
                         focus_at_startup: false,
@@ -1782,6 +1802,7 @@ mod tests {
                         max_bpc: None,
                         mode: None,
                         virtual_output: false,
+                        embed_screencast_cursor: false,
                         modeline: Some(
                             Modeline {
                                 clock: 173.0,
