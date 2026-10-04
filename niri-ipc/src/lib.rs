@@ -1188,6 +1188,20 @@ pub enum OutputAction {
         #[cfg_attr(feature = "clap", arg())]
         max_bpc: MaxBpc,
     },
+    /// Draw the pointer into screencasts of the output even when the client asked to hide it.
+    ScreencastCursor {
+        /// Whether to draw the pointer into screencasts.
+        #[cfg_attr(
+            feature = "clap",
+            arg(
+                value_name = "ON|OFF",
+                action = clap::ArgAction::Set,
+                value_parser = clap::builder::BoolishValueParser::new(),
+                hide_possible_values = true,
+            ),
+        )]
+        embed: bool,
+    },
 }
 
 /// Output mode to set.

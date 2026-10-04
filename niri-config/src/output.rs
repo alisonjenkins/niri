@@ -71,6 +71,14 @@ pub struct Output {
     /// what a streaming client needs, since each one has its own panel.
     #[knuffel(child)]
     pub virtual_output: bool,
+    /// Draw the pointer into screencasts of this output even when the client
+    /// asked for it to be hidden.
+    ///
+    /// Steam asks for a hidden cursor because its Remote Play clients draw
+    /// their own, but SteamVR's desktop view shows the frames as they are, so
+    /// a game streamed into a headset had no cursor at all.
+    #[knuffel(child)]
+    pub embed_screencast_cursor: bool,
     #[knuffel(child)]
     pub modeline: Option<Modeline>,
     #[knuffel(child)]
@@ -114,6 +122,7 @@ impl Default for Output {
             max_bpc: None,
             mode: None,
             virtual_output: false,
+            embed_screencast_cursor: false,
             modeline: None,
             variable_refresh_rate: None,
             background_color: None,

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use calloop::LoopHandle;
+use niri_config::OutputName;
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::allocator::gbm::GbmDevice;
 use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
@@ -242,6 +243,7 @@ impl State {
                     &cursor_data,
                     bbox.size,
                     scale,
+                    false,
                 ) {
                     cast.record_frame_time(get_monotonic_time());
                 }
@@ -548,6 +550,15 @@ impl Niri {
 
         let scale = Scale::from(output.current_scale().fractional_scale());
 
+        let embed_cursor = output
+            .user_data()
+            .get::<OutputName>()
+            .and_then(|name| {
+                let config = self.config.borrow();
+                config.outputs.find(name).map(|c| c.embed_screencast_cursor)
+            })
+            .unwrap_or(false);
+
         let mut elements = Vec::new();
         let mut cursor_data = None;
 
@@ -610,7 +621,14 @@ impl Niri {
             }
             let cursor_data = cursor_data.as_ref().unwrap();
 
-            if cast.dequeue_buffer_and_render(renderer, &elements, cursor_data, size, scale) {
+            if cast.dequeue_buffer_and_render(
+                renderer,
+                &elements,
+                cursor_data,
+                size,
+                scale,
+                embed_cursor,
+            ) {
                 cast.record_frame_time(target_presentation_time);
             }
         }
@@ -695,7 +713,14 @@ impl Niri {
 
             let cursor_data = CursorData::compute(&elements, main_start, pointer_location, scale);
 
-            if cast.dequeue_buffer_and_render(renderer, &elements, &cursor_data, bbox.size, scale) {
+            if cast.dequeue_buffer_and_render(
+                renderer,
+                &elements,
+                &cursor_data,
+                bbox.size,
+                scale,
+                false,
+            ) {
                 cast.record_frame_time(target_presentation_time);
             }
         }

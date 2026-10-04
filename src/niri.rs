@@ -2174,6 +2174,9 @@ impl State {
                 }
             }
             niri_ipc::OutputAction::MaxBpc { max_bpc } => config.max_bpc = Some(MaxBpc(max_bpc)),
+            niri_ipc::OutputAction::ScreencastCursor { embed } => {
+                config.embed_screencast_cursor = embed
+            }
         });
 
         self.reload_output_config();
