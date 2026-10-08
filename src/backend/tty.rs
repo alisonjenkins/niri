@@ -69,6 +69,7 @@ use crate::backend::virtual_output::{
 use crate::frame_clock::FrameClock;
 use crate::niri::{Niri, RedrawState, State};
 use crate::render_helpers::debug::draw_damage;
+use crate::render_helpers::dmabuf_import::import_dmabuf_checked;
 use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
@@ -2247,8 +2248,8 @@ impl Tty {
             }
         };
 
-        match renderer.import_dmabuf(dmabuf, None) {
-            Ok(_texture) => {
+        match import_dmabuf_checked(&mut renderer, dmabuf) {
+            Ok(()) => {
                 if dmabuf.node().is_none() {
                     dmabuf.set_node(Some(self.primary_render_node));
                 }
