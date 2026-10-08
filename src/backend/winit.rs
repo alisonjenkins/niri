@@ -25,6 +25,7 @@ use smithay::wayland::presentation::Refresh;
 use super::{IpcOutputMap, OutputId, RenderResult};
 use crate::niri::{Niri, RedrawState, State};
 use crate::render_helpers::debug::draw_damage;
+use crate::render_helpers::dmabuf_import::import_dmabuf_checked;
 use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, logical_output, WinitScale};
 
@@ -390,8 +391,8 @@ impl Winit {
     }
 
     pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool {
-        match self.backend.renderer().import_dmabuf(dmabuf, None) {
-            Ok(_texture) => true,
+        match import_dmabuf_checked(self.backend.renderer(), dmabuf) {
+            Ok(()) => true,
             Err(err) => {
                 debug!("error importing dmabuf: {err:?}");
                 false
